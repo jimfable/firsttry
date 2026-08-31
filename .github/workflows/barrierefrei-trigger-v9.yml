@@ -1,0 +1,36 @@
+name: Ensure Functional-Bundle v9 Audit Starts
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-trigger-v9.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    steps:
+      - name: Wait for validated primary-v2 and dispatch v9
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os,time,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'v9-trigger'}
+          deadline=time.time()+4*3600
+          while True:
+              try:
+                  for file in ('barrierefrei-primary-v2-results.json','barrierefrei-primary-v2-validation.json'):
+                      urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/contents/results/primary-v2/{file}',headers=h),timeout=60).read()
+                  break
+              except Exception: pass
+              if time.time()>deadline:raise SystemExit('primary-v2 unavailable')
+              time.sleep(45)
+          request=urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/workflows/barrierefrei-adversarial-v9.yml/dispatches',data=json.dumps({'ref':'main'}).encode(),headers={**h,'Content-Type':'application/json'},method='POST')
+          urllib.request.urlopen(request,timeout=60).read();print('dispatched v9')
+          PY
