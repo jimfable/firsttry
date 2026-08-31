@@ -1,0 +1,58 @@
+[
+  {
+    "nr": 109,
+    "name": "BHG Bau-betriebs GmbH",
+    "city": "Mainz",
+    "website": "https://bhg-bau-betrieb.com/",
+    "priority": "Mittel"
+  },
+  {
+    "nr": 161,
+    "name": "Dunkel Technische Kundendienste GmbH",
+    "city": "Magdeburg",
+    "website": "https://www.dunkel-hls.de/",
+    "priority": "Mittel"
+  },
+  {
+    "nr": 702,
+    "name": "A. Schirmer GmbH Wasser Wärme Werker",
+    "city": "Ulm",
+    "website": "http://www.a-schirmer.de/",
+    "priority": "Hoch"
+  },
+  {
+    "nr": 1946,
+    "name": "Hermann Dewald",
+    "city": "Heidelberg",
+    "website": "http://www.sanitaer-dewald.de/",
+    "priority": "Hoch"
+  },
+  {
+    "nr": 969,
+    "name": "Bahlmann Bau GmbH Oldenburg",
+    "city": "Oldenburg",
+    "website": "https://www.bahlmannbau.de/",
+    "priority": "Mittel"
+  },
+  {
+    "nr": 1062,
+    "name": "Bauservice Sokolowski | Hannover",
+    "city": "Hannover",
+    "website": "https://bauservice-sokolowski.de/",
+    "priority": "Mittel"
+  },
+  {
+    "nr": 2579,
+    "name": "Nikoleit Bau GmbH",
+    "city": "Wolfsburg",
+    "website": "https://www.nikoleit-bau.de/",
+    "priority": "Mittel"
+  },
+  {
+    "nr": 3250,
+    "name": "WAF Bauprojekt GmbH",
+    "city": "Magdeburg",
+    "website": "http://waf-bauprojekt.de/",
+    "priority": "Mittel"
+  }
+]
