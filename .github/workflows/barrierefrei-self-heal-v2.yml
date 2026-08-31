@@ -1,0 +1,38 @@
+name: Self-Heal Hardened Barrierefrei Audit v2
+
+on:
+  workflow_run:
+    workflows:
+      - "Fresh Exhaustive Barrierefrei Primary Audit v2"
+      - "Authoritative Barrierefrei Audit v6 Hardened"
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  retry-failed:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out' || github.event.workflow_run.conclusion == 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redispatch with bounded retries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];wid=os.environ['WORKFLOW_ID'];name=os.environ['WORKFLOW_NAME']
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'barrierefrei-self-heal-v2'}
+          with urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/workflows/{wid}/runs?per_page=12',headers=h),timeout=60) as r:
+              runs=json.load(r).get('workflow_runs',[])
+          failures=[x for x in runs if x.get('conclusion') in {'failure','timed_out','cancelled'}]
+          # An expected early v6 run can fail before primary-v2 exists; leave room for three real retries.
+          if len(failures)>4: raise SystemExit(f'{name}: retry limit reached ({len(failures)})')
+          body=json.dumps({'ref':'main'}).encode()
+          rq=urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/workflows/{wid}/dispatches',data=body,headers={**h,'Content-Type':'application/json'},method='POST')
+          urllib.request.urlopen(rq,timeout=60).read()
+          print(f'redispatched {name}; failures={len(failures)}')
+          PY
