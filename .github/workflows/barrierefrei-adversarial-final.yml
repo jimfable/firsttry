@@ -1,0 +1,127 @@
+name: Independent Adversarial Barrierefrei Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "results/primary/barrierefrei-exhaustive-results.json"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  adversarial:
+    name: Independent countercheck shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Run independent adversarial pass
+        run: |
+          set -euo pipefail
+          test -s results/primary/barrierefrei-exhaustive-results.json
+          HELP="$(python audit/adversarial.py --help)"
+          if grep -q -- '--primary' <<<"$HELP"; then INPUT_ARG=--primary; elif grep -q -- '--input' <<<"$HELP"; then INPUT_ARG=--input; else echo "$HELP"; exit 2; fi
+          python audit/adversarial.py \
+            "$INPUT_ARG" results/primary/barrierefrei-exhaustive-results.json \
+            --shard ${{ matrix.shard }} \
+            --shards 16 \
+            --out adversarial-${{ matrix.shard }}.jsonl
+      - name: Validate shard
+        run: |
+          test -s adversarial-${{ matrix.shard }}.jsonl
+          python - <<'PY'
+          import json, pathlib
+          rows=[json.loads(x) for x in pathlib.Path('adversarial-${{ matrix.shard }}.jsonl').read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert rows
+          assert len(rows)==len({int(r['nr']) for r in rows})
+          for r in rows:
+              assert r.get('verdict')
+              assert r.get('reason') or r.get('evidence')
+          print({'rows':len(rows)})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adversarial-results-${{ matrix.shard }}
+          path: adversarial-${{ matrix.shard }}.jsonl
+          retention-days: 3
+          if-no-files-found: error
+
+  finalize:
+    name: Combine, arbitrate, self-test, and commit final decisions
+    needs: adversarial
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: adversarial-results-*
+          path: adversarial-shards
+      - name: Combine independent results
+        run: |
+          set -euo pipefail
+          mkdir -p results/adversarial results/final
+          python - <<'PY'
+          import glob,json,pathlib
+          rows=[]
+          for p in glob.glob('adversarial-shards/**/*.jsonl',recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}
+          assert len(rows)==len(by), f'duplicate adversarial rows: {len(rows)-len(by)}'
+          assert len(by)==1041, f'expected 1041 adversarial rows, got {len(by)}'
+          final=[by[n] for n in sorted(by)]
+          pathlib.Path('results/adversarial/barrierefrei-adversarial-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
+          with pathlib.Path('results/adversarial/barrierefrei-adversarial-results.jsonl').open('w',encoding='utf-8') as f:
+              for r in final: f.write(json.dumps(r,ensure_ascii=False)+'\n')
+          coverage_fail=[]
+          for r in final:
+              cov=r.get('coverage') or {}
+              attempts=int(r.get('search_attempts') or cov.get('search_attempts') or 0)
+              checked=r.get('checked_urls') or cov.get('checked_urls') or []
+              if attempts<=0 and not checked and not cov:
+                  coverage_fail.append(int(r['nr']))
+          if coverage_fail:
+              raise SystemExit(f'adversarial pass lacks recorded coverage for {len(coverage_fail)} rows: {coverage_fail[:30]}')
+          print({'rows':len(final),'coverage_complete':True})
+          PY
+      - name: Arbitrate and run hard regression gates
+        run: |
+          python audit/finalize.py \
+            --primary results/primary/barrierefrei-exhaustive-results.json \
+            --adversarial results/adversarial/barrierefrei-adversarial-results.json \
+            --out results/final/barrierefrei-final-results.json \
+            --validation results/final/barrierefrei-final-validation.json
+      - name: Commit final validated research
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/adversarial results/final
+          git commit -m "Store independently validated Barrierefrei decisions [skip ci]"
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-final-validated
+          path: |
+            results/primary
+            results/adversarial
+            results/final
+          retention-days: 7
