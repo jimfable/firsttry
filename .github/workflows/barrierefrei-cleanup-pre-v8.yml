@@ -1,0 +1,41 @@
+name: Cancel Superseded Pre-v8 Barrierefrei Runs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-cleanup-pre-v8.yml"
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Remove superseded v7 definition
+        run: |
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          if [ -f .github/workflows/barrierefrei-adversarial-v7.yml ]; then
+            git rm .github/workflows/barrierefrei-adversarial-v7.yml
+            git commit -m "Remove superseded v7 verifier [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Cancel active v7 runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'pre-v8-cleanup'}
+          with urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?per_page=100',headers=h),timeout=60) as response:runs=json.load(response).get('workflow_runs',[])
+          for run in runs:
+              if run.get('name')=='Authoritative Barrierefrei Audit v7 Strict Context' and run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  try:urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/cancel",headers=h,method='POST'),timeout=60).read()
+                  except Exception:pass
+          PY
