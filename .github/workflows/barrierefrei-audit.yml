@@ -1,0 +1,86 @@
+name: Temporary Barrierefrei Profis Research Audit
+
+on:
+  push:
+    paths:
+      - "audit/**"
+      - ".github/workflows/barrierefrei-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    name: Crawl shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install crawler dependencies
+        run: python -m pip install --disable-pip-version-check aiohttp beautifulsoup4 lxml
+      - name: Crawl and classify
+        run: |
+          python audit/crawler.py \
+            --queue audit/queue.json \
+            --shard ${{ matrix.shard }} \
+            --shards 16 \
+            --out results-${{ matrix.shard }}.jsonl
+      - name: Upload shard result
+        uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-results-${{ matrix.shard }}
+          path: results-${{ matrix.shard }}.jsonl
+          retention-days: 1
+          if-no-files-found: error
+
+  combine:
+    name: Combine and validate all 1,041 results
+    needs: crawl
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: barrierefrei-results-*
+          path: shard-results
+      - name: Combine, deduplicate, and validate
+        run: |
+          python - <<'PY'
+          import glob, json, pathlib
+          rows = []
+          for path in glob.glob("shard-results/**/*.jsonl", recursive=True):
+              for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+                  if line.strip():
+                      rows.append(json.loads(line))
+          by_nr = {int(row["nr"]): row for row in rows}
+          final = [by_nr[nr] for nr in sorted(by_nr)]
+          if len(final) != 1041:
+              raise SystemExit(f"Expected 1041 unique results, got {len(final)}")
+          pathlib.Path("barrierefrei-research-results.json").write_text(
+              json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          with pathlib.Path("barrierefrei-research-results.jsonl").open("w", encoding="utf-8") as fh:
+              for row in final:
+                  fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+          counts = {}
+          for row in final:
+              counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
+          print(counts)
+          PY
+      - name: Upload complete result
+        uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-results-all
+          path: |
+            barrierefrei-research-results.json
+            barrierefrei-research-results.jsonl
+          retention-days: 1
+          if-no-files-found: error
