@@ -1,0 +1,41 @@
+name: Remove Superseded Barrierefrei v4 Workflow
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-cleanup-v4.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Delete superseded v4 definition
+        run: |
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          if [ -f .github/workflows/barrierefrei-adversarial-v4.yml ]; then
+            git rm .github/workflows/barrierefrei-adversarial-v4.yml
+            git commit -m "Remove superseded v4 verifier [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Cancel any superseded v4 run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','User-Agent':'v4-cleanup'}
+          with urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?per_page=100',headers=h)) as r: runs=json.load(r)['workflow_runs']
+          for run in runs:
+              if run.get('name')=='Authoritative Barrierefrei Two-Pass Audit v4' and run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  try: urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/cancel",headers=h,method='POST')).read()
+                  except Exception: pass
+          PY
