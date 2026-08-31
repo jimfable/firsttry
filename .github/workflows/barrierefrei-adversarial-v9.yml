@@ -1,0 +1,149 @@
+name: Authoritative Barrierefrei Audit v9 Functional Bundles
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "results/primary-v2/barrierefrei-primary-v2-results.json"
+      - ".github/workflows/barrierefrei-adversarial-v9.yml"
+      - "audit/adversarial_v7.py"
+      - "audit/finalize_v3.py"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  logic-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python audit/test_decision_logic_v3.py
+
+  verify:
+    needs: logic-tests
+    name: Functional-bundle verifier v9 shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require validated primary input
+        run: |
+          test -s results/primary-v2/barrierefrei-primary-v2-results.json
+          test -s results/primary-v2/barrierefrei-primary-v2-validation.json
+          python - <<'PY'
+          import json,pathlib
+          rows=json.loads(pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').read_text())
+          val=json.loads(pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').read_text())
+          assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
+          assert not val.get('validation_errors'),val
+          PY
+      - name: Install independent research dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4 lxml selenium
+      - name: Run expanded functional-bundle audit
+        run: |
+          python audit/adversarial_v7.py \
+            --input results/primary-v2/barrierefrei-primary-v2-results.json \
+            --shard ${{ matrix.shard }} --shards 24 \
+            --out adversarial-v9-${{ matrix.shard }}.jsonl
+      - name: Validate every research record
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          rows=[json.loads(x) for x in pathlib.Path('adversarial-v9-${{ matrix.shard }}.jsonl').read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert rows and len(rows)==len({int(r['nr']) for r in rows})
+          for r in rows:
+              c=r.get('coverage') or {};site=r.get('website') or r.get('discovered_website') or ''
+              attempts=int(r.get('search_attempts') or c.get('search_attempts') or 0);errors=len(c.get('engine_errors') or [])
+              assert r.get('strict_context_filter') is True and r.get('expanded_retrieval') is True and r.get('functional_bundle_filter') is True
+              assert r['verdict'] in {'Aufnehmen','Nicht aufnehmen'} and r['confidence'] in {'Hoch','Sehr hoch'} and r.get('reason')
+              assert attempts>=90 and len(c.get('search_engines') or [])>=7 and len(c.get('queries') or [])>=14 and attempts-errors>=14
+              if site:
+                  assert len(c.get('checked_urls') or [])>=10
+                  assert c.get('archive_attempted') is True and c.get('common_crawl_attempted') is True
+                  assert c.get('browser_attempted') is True or int(c.get('official_pages') or 0)>=3
+              else:
+                  assert c.get('official_domain_discovery_attempted') is True and int(c.get('official_domain_discovery_attempts') or 0)>=18
+                  assert c.get('archive_not_applicable_no_domain') is True and c.get('common_crawl_not_applicable_no_domain') is True and c.get('browser_not_applicable_no_domain') is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adversarial-v9-${{ matrix.shard }}
+          path: adversarial-v9-${{ matrix.shard }}.jsonl
+          if-no-files-found: error
+          retention-days: 5
+
+  finalize:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: adversarial-v9-*
+          path: shards
+      - name: Combine exactly 1,041 independently verified rows
+        run: |
+          mkdir -p results/adversarial-v9 results/final-v9
+          python - <<'PY'
+          import glob,json,pathlib
+          rows=[]
+          for p in glob.glob('shards/**/*.jsonl',recursive=True): rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}
+          assert len(rows)==len(by) and len(by)==1041,(len(rows),len(by))
+          pathlib.Path('results/adversarial-v9/barrierefrei-adversarial-v9-results.json').write_text(json.dumps([by[n] for n in sorted(by)],ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+      - name: Arbitrate with strict evidence windows
+        run: |
+          python audit/finalize_v3.py \
+            --primary results/primary-v2/barrierefrei-primary-v2-results.json \
+            --adversarial results/adversarial-v9/barrierefrei-adversarial-v9-results.json \
+            --out results/final-v9/barrierefrei-final-results.json \
+            --validation results/final-v9/barrierefrei-final-validation.json
+      - name: Enforce zero unresolved and regression compliance
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          rows=json.loads(pathlib.Path('results/final-v9/barrierefrei-final-results.json').read_text())
+          val=json.loads(pathlib.Path('results/final-v9/barrierefrei-final-validation.json').read_text())
+          assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
+          assert all(r['verdict'] in {'Aufnehmen','Nicht aufnehmen'} and r['confidence'] in {'Hoch','Sehr hoch'} for r in rows)
+          assert all(r.get('reason') and r.get('decision_scope') for r in rows)
+          assert all(r.get('source_url') for r in rows if r['verdict']=='Aufnehmen')
+          assert not val.get('validation_errors'),val
+          assert all(v=='Aufnehmen' for v in val['positive_controls'].values()) and all(v=='Nicht aufnehmen' for v in val['negative_controls'].values())
+          PY
+      - name: Commit authoritative final-v9 result set
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/adversarial-v9 results/final-v9
+          git commit -m "Store functional-bundle authoritative Barrierefrei audit v9 [skip ci]"
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-authoritative-final-v9
+          path: |
+            results/primary-v2
+            results/adversarial-v9
+            results/final-v9
+          retention-days: 7
