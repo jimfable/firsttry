@@ -1,0 +1,108 @@
+name: Fresh Exhaustive Barrierefrei Primary Audit v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-primary-v2.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  audit:
+    name: Exhaustive primary shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Run exhaustive primary audit
+        run: |
+          set -euo pipefail
+          python audit/exhaustive.py --shard ${{ matrix.shard }} --shards 16 --out primary-v2-${{ matrix.shard }}.jsonl
+      - name: Validate shard output and negative coverage
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('primary-v2-${{ matrix.shard }}.jsonl')
+          rows=[json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert rows and len(rows)==len({int(r['nr']) for r in rows})
+          for r in rows:
+              assert r.get('verdict') in {'Aufnehmen','Nicht aufnehmen'}
+              assert r.get('confidence') in {'Hoch','Sehr hoch'}
+              assert r.get('reason')
+              c=r.get('coverage') or {}
+              if r['verdict']=='Nicht aufnehmen':
+                  assert int(r.get('search_attempts') or c.get('search_attempts') or 0)>=27
+                  assert c.get('archive_attempted') is True
+                  assert c.get('common_crawl_attempted') is True
+                  assert c.get('browser_attempted') is True or int(c.get('official_pages') or 0)>=3
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: primary-v2-${{ matrix.shard }}
+          path: primary-v2-${{ matrix.shard }}.jsonl
+          if-no-files-found: error
+          retention-days: 5
+
+  combine:
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: primary-v2-*
+          path: shards
+      - name: Combine, validate controls, and write primary-v2
+        run: |
+          set -euo pipefail
+          mkdir -p results/primary-v2
+          python - <<'PY'
+          import glob,json,pathlib
+          rows=[]
+          for p in glob.glob('shards/**/*.jsonl',recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}
+          errors=[]
+          if len(rows)!=len(by): errors.append(f'duplicates={len(rows)-len(by)}')
+          if len(by)!=1041: errors.append(f'expected 1041 got {len(by)}')
+          positive={109,161,702,1946}; negative={969,1062,2579,3250}
+          for n in positive:
+              if by.get(n,{}).get('verdict')!='Aufnehmen': errors.append(f'positive control #{n} failed')
+          for n in negative:
+              if by.get(n,{}).get('verdict')!='Nicht aufnehmen': errors.append(f'negative control #{n} failed')
+          final=[by[n] for n in sorted(by)]
+          val={'rows':len(final),'verdicts':{v:sum(r.get('verdict')==v for r in final) for v in ('Aufnehmen','Nicht aufnehmen')},'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positive)},'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negative)},'validation_errors':errors}
+          pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
+          pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').write_text(json.dumps(val,ensure_ascii=False,indent=2),encoding='utf-8')
+          if errors: raise SystemExit(' | '.join(errors))
+          PY
+      - name: Commit validated primary-v2 results
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/primary-v2
+          git commit -m "Store fresh exhaustive primary-v2 audit [skip ci]"
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-primary-v2-validated
+          path: results/primary-v2
+          retention-days: 7
