@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "audit/exhaustive.py"
+      - "requirements.txt"
       - ".github/workflows/barrierefrei-exhaustive.yml"
   workflow_dispatch:
 
@@ -30,8 +31,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install audit dependencies
-        run: |
-          python -m pip install --disable-pip-version-check aiohttp beautifulsoup4 lxml pypdf selenium
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
       - name: Record browser availability
         run: |
           which google-chrome || true
