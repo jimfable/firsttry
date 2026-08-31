@@ -1,0 +1,263 @@
+name: Publish Validated Barrierefrei Final v9
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "results/final-v9/barrierefrei-final-results.json"
+      - "results/final-v9/barrierefrei-final-validation.json"
+      - ".github/workflows/barrierefrei-publish-final-v9.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: barrierefrei-final-v9-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wait for authoritative validated result files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, subprocess, time
+          repo=os.environ['GITHUB_REPOSITORY']
+          deadline=time.time()+4*3600
+          while True:
+              subprocess.run(['git','pull','--rebase','origin','main'],check=True)
+              rp=pathlib.Path('results/final-v9/barrierefrei-final-results.json')
+              vp=pathlib.Path('results/final-v9/barrierefrei-final-validation.json')
+              if rp.is_file() and vp.is_file():
+                  rows=json.loads(rp.read_text(encoding='utf-8'))
+                  val=json.loads(vp.read_text(encoding='utf-8'))
+                  if len(rows)==1041 and len({int(r['nr']) for r in rows})==1041 and not val.get('validation_errors'):
+                      break
+              if time.time()>deadline:
+                  raise SystemExit('Authoritative final-v9 result did not become valid within four hours')
+              time.sleep(45)
+          print({'rows':len(rows),'verdicts':val.get('verdicts'),'confidence':val.get('confidence'),'disagreements':val.get('disagreements')})
+          PY
+      - name: Install workbook dependency
+        run: python -m pip install --disable-pip-version-check openpyxl
+      - name: Run independent release-time validation and build workbook
+        run: |
+          set -euo pipefail
+          mkdir -p release-v9/evidence
+          python - <<'PY'
+          from pathlib import Path
+          import json, hashlib, zipfile, re
+          from openpyxl import Workbook, load_workbook
+          from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+          from openpyxl.utils import get_column_letter
+          from openpyxl.worksheet.table import Table, TableStyleInfo
+
+          root=Path('.')
+          results_path=root/'results/final-v9/barrierefrei-final-results.json'
+          validation_path=root/'results/final-v9/barrierefrei-final-validation.json'
+          rows=json.loads(results_path.read_text(encoding='utf-8'))
+          validation=json.loads(validation_path.read_text(encoding='utf-8'))
+
+          assert len(rows)==1041
+          assert len({int(r['nr']) for r in rows})==1041
+          assert {r['verdict'] for r in rows}<={'Aufnehmen','Nicht aufnehmen'}
+          assert {r['confidence'] for r in rows}<={'Hoch','Sehr hoch'}
+          assert all(str(r.get('reason') or '').strip() for r in rows)
+          assert all(str(r.get('source_url') or '').strip() for r in rows if r['verdict']=='Aufnehmen')
+          assert not validation.get('validation_errors'), validation
+          assert all(v=='Aufnehmen' for v in validation.get('positive_controls',{}).values())
+          assert all(v=='Nicht aufnehmen' for v in validation.get('negative_controls',{}).values())
+
+          forbidden=('unklar','kontakt nötig','muss noch','noch recherchieren','offen')
+          assert not any(any(x in str(r.get(k) or '').lower() for x in forbidden) for r in rows for k in ('verdict','confidence'))
+
+          take=[r for r in rows if r['verdict']=='Aufnehmen']
+          reject=[r for r in rows if r['verdict']=='Nicht aufnehmen']
+          very_high=sum(r['confidence']=='Sehr hoch' for r in rows)
+          high=sum(r['confidence']=='Hoch' for r in rows)
+
+          wb=Workbook()
+          ws=wb.active; ws.title='FINAL – Übersicht'
+          dark='0F766E'; light='D1FAE5'; slate='E2E8F0'; red='FEE2E2'; green='DCFCE7'; blue='DBEAFE'
+          ws.merge_cells('A1:E1'); ws['A1']='Barrierefrei-Profis – autoritative Vollrecherche der 1.041 Fälle'
+          ws['A1'].fill=PatternFill('solid',fgColor=dark); ws['A1'].font=Font(color='FFFFFF',bold=True,size=16); ws['A1'].alignment=Alignment(vertical='center')
+          ws.row_dimensions[1].height=30
+          summary=[
+              ['Kennzahl','Wert','Bedeutung','',''],
+              ['Vollständig geprüfte Betriebe',1041,'Jeder Fall besitzt ein klares Aufnahmeurteil.','',''],
+              ['Aufnehmen',len(take),'Belastbarer, identitätsgebundener Nachweis nach Aufnahme-Standard.','',''],
+              ['Nicht aufnehmen',len(reject),'Nach vollständigem Primär- und Gegenlauf kein tragfähiger Aufnahmebeleg.','',''],
+              ['Sehr hohe Sicherheit',very_high,'Beide vollständigen Wege stimmen überein bzw. Beleg konvergiert.','',''],
+              ['Hohe Sicherheit',high,'Klare Arbitration nach unabhängigen vollständigen Wegen.','',''],
+              ['Ungeklärte Restfälle',0,'Keine Kategorie „unklar“, „Kontakt nötig“ oder „noch recherchieren“.','',''],
+          ]
+          for rr,row in enumerate(summary,start=3):
+              for cc,v in enumerate(row,start=1): ws.cell(rr,cc,v)
+          for c in ws[3]: c.fill=PatternFill('solid',fgColor=light); c.font=Font(bold=True,color='064E3B')
+          ws.merge_cells('A12:E12'); ws['A12']='Entscheidungsstandard'; ws['A12'].fill=PatternFill('solid',fgColor=slate); ws['A12'].font=Font(bold=True)
+          rules=[
+              ['Aufnehmen','Aktuelles, identitätsgebundenes Angebot für barrierefreien/altersgerechten Umbau, konkrete funktionale Maßnahmenbündel, Lift-/Zugangstechnik oder qualifizierte Fachplanung.'],
+              ['Nicht aufnehmen','Kein belastbarer Nachweis nach offizieller Site-Navigation, Unterseiten/Sitemaps, mehreren Suchfrontends, Browser-/Reader-Fallback, Wayback, Common Crawl und unabhängiger Gegenprüfung.'],
+              ['Ausgeschlossen','Digitale BFSG/BITV-Barrierefreiheit, bloß barrierefreie Geschäftsräume, reine Neubau-Referenzen, Showroom/Handel ohne Ausführung und falsch zugeordnete gleichnamige Firmen.'],
+              ['Geltungsbereich','Das Urteil entscheidet die Aufnahme in das spezialisierte Verzeichnis; es behauptet nicht, dass ein Betrieb niemals eine nicht öffentlich dokumentierte Einzelarbeit ausgeführt hat.'],
+          ]
+          for i,(a,b) in enumerate(rules,start=13): ws.cell(i,1,a); ws.cell(i,2,b); ws.merge_cells(start_row=i,start_column=2,end_row=i,end_column=5)
+          for col,width in {'A':28,'B':26,'C':22,'D':22,'E':62}.items(): ws.column_dimensions[col].width=width
+          for row in ws.iter_rows():
+              for cell in row: cell.alignment=Alignment(vertical='top',wrap_text=True)
+
+          headers=['#','Betrieb','Ort','Website','Endurteil','Sicherheit','Begründung','Primärquelle','Primärurteil','Gegenurteil','Abweichung','Arbitration','Entscheidungsumfang','Primär-Coverage','Gegen-Coverage']
+          def cov(obj):
+              c=obj or {}
+              if isinstance(c,str): return c
+              fields=[]
+              for k in ('pages_fetched','official_pages','historical_pages','external_pages','search_attempts','checked_urls','methods','errors'):
+                  v=c.get(k)
+                  if isinstance(v,list): v=len(v)
+                  if v not in (None,'',0,[]): fields.append(f'{k}={v}')
+              return '; '.join(fields)
+          matrix=[]
+          for r in sorted(rows,key=lambda x:int(x['nr'])):
+              p=r.get('primary') or {}; a=r.get('adversarial') or {}
+              matrix.append([
+                  int(r['nr']),r.get('name',''),r.get('city',''),r.get('website',''),r['verdict'],r['confidence'],
+                  r.get('reason',''),r.get('source_url',''),r.get('primary_verdict',''),r.get('adversarial_verdict',''),
+                  'Ja' if r.get('disagreement') else 'Nein',r.get('arbitration',''),r.get('decision_scope',''),
+                  cov(p.get('coverage') or p),cov(a.get('coverage') or a),
+              ])
+
+          def add_data_sheet(title,data):
+              s=wb.create_sheet(title); s.append(headers)
+              for row in data:s.append(row)
+              s.freeze_panes='A2'; s.auto_filter.ref=f'A1:O{s.max_row}'
+              for cell in s[1]: cell.fill=PatternFill('solid',fgColor=dark); cell.font=Font(color='FFFFFF',bold=True); cell.alignment=Alignment(wrap_text=True,vertical='center')
+              widths=[8,38,20,38,18,16,62,48,16,16,12,60,46,42,42]
+              for i,w in enumerate(widths,1):s.column_dimensions[get_column_letter(i)].width=w
+              for row in s.iter_rows(min_row=2):
+                  for cell in row:cell.alignment=Alignment(vertical='top',wrap_text=True)
+                  row[4].fill=PatternFill('solid',fgColor=green if row[4].value=='Aufnehmen' else red)
+                  row[4].font=Font(bold=True,color='166534' if row[4].value=='Aufnehmen' else '991B1B')
+              if s.max_row>1:
+                  tab=Table(displayName=re.sub(r'\W+','',title)[:22]+'Table',ref=f'A1:O{s.max_row}')
+                  tab.tableStyleInfo=TableStyleInfo(name='TableStyleMedium2',showFirstColumn=False,showLastColumn=False,showRowStripes=True,showColumnStripes=False)
+                  s.add_table(tab)
+              return s
+
+          add_data_sheet('FINAL – Audit 1041',matrix)
+          add_data_sheet('FINAL – Aufnehmen',[row for row in matrix if row[4]=='Aufnehmen'])
+          add_data_sheet('FINAL – Nicht aufnehmen',[row for row in matrix if row[4]=='Nicht aufnehmen'])
+
+          val=wb.create_sheet('FINAL – Validierung')
+          val_rows=[
+              ['Prüfung','Ergebnis'],['Eindeutige IDs',len({r['nr'] for r in rows})],['Zeilen',len(rows)],
+              ['Nur klare Urteile',str({r['verdict'] for r in rows})],['Restfälle',0],['Positivquellen vollständig',all(r.get('source_url') for r in take)],
+              ['Validierungsfehler',len(validation.get('validation_errors',[]))],['Abweichungen zwischen Läufen',validation.get('disagreements',0)],
+              ['Positive Kontrollfälle',json.dumps(validation.get('positive_controls',{}),ensure_ascii=False)],
+              ['Negative Kontrollfälle',json.dumps(validation.get('negative_controls',{}),ensure_ascii=False)],
+          ]
+          for row in val_rows:val.append(row)
+          val.column_dimensions['A'].width=38;val.column_dimensions['B'].width=90
+          for cell in val[1]:cell.fill=PatternFill('solid',fgColor=dark);cell.font=Font(color='FFFFFF',bold=True)
+          for row in val.iter_rows():
+              for cell in row:cell.alignment=Alignment(vertical='top',wrap_text=True)
+
+          meth=wb.create_sheet('FINAL – Methodik')
+          methodology=[
+              ['Stufe','Umfang'],
+              ['Primärlauf','Offizielle Website, echte Navigation, Unterseiten, Sitemaps, Suchabfragen, Browser-Fallback, Wayback und Common Crawl.'],
+              ['Unabhängiger Gegenlauf','Separat implementierte Suche über mehrere Suchfrontends, Domain-/Identitätsauflösung, aktuelle und historische Quellen sowie strikte Evidenzfenster.'],
+              ['Recall-Erweiterung','Neben expliziten Begriffen zählen konkrete funktionale Bündel: schwellenlose Dusche plus Haltegriffe/Duschsitz/Pflegekasse, unterfahrbarer Waschtisch, Türverbreiterung und Badewanne-zur-Dusche.'],
+              ['Precision-Filter','BFSG/BITV/WCAG, Besucherzugänglichkeit, reine Neubau-Referenz, Showroom/Handel ohne Ausführung und falsche Entity-Matches werden verworfen.'],
+              ['Arbitration','Identitätsgebundener tragfähiger Positivbeleg gewinnt; andernfalls führt die ergebnislose vollständige Doppelprüfung zum Nicht-Aufnehmen-Urteil.'],
+              ['Regressionstests','Bekannte frühere False Negatives müssen positiv, bekannte BFSG/irrelevante Fälle negativ sein; jeder Fehler blockiert den Export.'],
+          ]
+          for row in methodology:meth.append(row)
+          meth.column_dimensions['A'].width=30;meth.column_dimensions['B'].width=120
+          for cell in meth[1]:cell.fill=PatternFill('solid',fgColor=dark);cell.font=Font(color='FFFFFF',bold=True)
+          for row in meth.iter_rows():
+              for cell in row:cell.alignment=Alignment(vertical='top',wrap_text=True)
+
+          out=Path('release-v9/barrierefrei_profis_1041_FINAL_v9.xlsx')
+          wb.save(out)
+
+          # Reopen and validate the serialized workbook, not merely the in-memory object.
+          check=load_workbook(out,read_only=True,data_only=False)
+          assert {'FINAL – Übersicht','FINAL – Audit 1041','FINAL – Aufnehmen','FINAL – Nicht aufnehmen','FINAL – Validierung','FINAL – Methodik'}.issubset(check.sheetnames)
+          audit=check['FINAL – Audit 1041']
+          assert audit.max_row==1042
+          serialized=[]
+          for row in audit.iter_rows(min_row=2,values_only=True): serialized.append(row)
+          assert len(serialized)==1041 and len({int(row[0]) for row in serialized})==1041
+          assert {row[4] for row in serialized}<={'Aufnehmen','Nicht aufnehmen'}
+          assert all(row[5] in {'Hoch','Sehr hoch'} for row in serialized)
+          assert all(str(row[6] or '').strip() for row in serialized)
+          assert all(str(row[7] or '').strip() for row in serialized if row[4]=='Aufnehmen')
+
+          # Evidence package: full result rows, validation, and human-readable CSV.
+          import csv
+          csv_path=Path('release-v9/evidence/barrierefrei-final-1041.csv')
+          with csv_path.open('w',encoding='utf-8-sig',newline='') as handle:
+              writer=csv.writer(handle,delimiter=';');writer.writerow(headers)
+              writer.writerows(matrix)
+          (Path('release-v9/evidence')/'barrierefrei-final-results.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          (Path('release-v9/evidence')/'barrierefrei-final-validation.json').write_text(json.dumps(validation,ensure_ascii=False,indent=2),encoding='utf-8')
+          with zipfile.ZipFile('release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip','w',compression=zipfile.ZIP_DEFLATED) as archive:
+              for p in Path('release-v9/evidence').iterdir():archive.write(p,p.name)
+          with zipfile.ZipFile('release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip') as archive:assert archive.testzip() is None
+
+          files=[out,Path('release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip')]
+          sha_lines=[]
+          for p in files:sha_lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}")
+          Path('release-v9/barrierefrei_profis_1041_SHA256_v9.txt').write_text('\n'.join(sha_lines)+'\n',encoding='utf-8')
+          release_validation={
+              'status':'VERIFIED','rows':1041,'unique_ids':1041,'verdicts':{'Aufnehmen':len(take),'Nicht aufnehmen':len(reject)},
+              'confidence':{'Sehr hoch':very_high,'Hoch':high},'unresolved':0,'workbook_reopened':True,'evidence_zip_tested':True,
+              'sha256_written':True,'upstream_validation':validation,
+          }
+          Path('release-v9/FINAL_VALIDATION.json').write_text(json.dumps(release_validation,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(release_validation,ensure_ascii=False,indent=2))
+          PY
+      - name: Commit release manifest and workbook
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          mkdir -p results/release-v9
+          cp release-v9/FINAL_VALIDATION.json results/release-v9/
+          cp release-v9/barrierefrei_profis_1041_FINAL_v9.xlsx results/release-v9/
+          cp release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip results/release-v9/
+          cp release-v9/barrierefrei_profis_1041_SHA256_v9.txt results/release-v9/
+          git pull --rebase origin main
+          git add results/release-v9
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish validated final Barrierefrei v9 artifacts [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Publish immutable GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="barrierefrei-audit-final-v9"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-v9/barrierefrei_profis_1041_FINAL_v9.xlsx release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip release-v9/barrierefrei_profis_1041_SHA256_v9.txt release-v9/FINAL_VALIDATION.json --clobber
+          else
+            gh release create "$TAG" release-v9/barrierefrei_profis_1041_FINAL_v9.xlsx release-v9/barrierefrei_profis_1041_EVIDENZ_v9.zip release-v9/barrierefrei_profis_1041_SHA256_v9.txt release-v9/FINAL_VALIDATION.json --title "Barrierefrei-Profis: autoritativer Audit der 1.041 Fälle" --notes "Vollständig validierter Audit. Keine ungeklärten Restfälle. Siehe FINAL_VALIDATION.json und Workbook-Methodik."
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-final-v9-release-package
+          path: release-v9
+          retention-days: 14
