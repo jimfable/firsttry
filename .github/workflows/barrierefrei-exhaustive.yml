@@ -1,0 +1,172 @@
+name: Exhaustive Barrierefrei Profis Audit
+
+on:
+  push:
+    paths:
+      - "audit/exhaustive.py"
+      - ".github/workflows/barrierefrei-exhaustive.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  audit:
+    name: Exhaustive audit shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install audit dependencies
+        run: |
+          python -m pip install --disable-pip-version-check aiohttp beautifulsoup4 lxml pypdf selenium
+      - name: Record browser availability
+        run: |
+          which google-chrome || true
+          google-chrome --version || true
+          which chromium || true
+          chromium --version || true
+          which chromedriver || true
+          chromedriver --version || true
+      - name: Run exhaustive audit
+        run: |
+          python audit/exhaustive.py \
+            --shard ${{ matrix.shard }} \
+            --shards 16 \
+            --out exhaustive-${{ matrix.shard }}.jsonl
+      - name: Validate shard is nonempty
+        run: |
+          test -s exhaustive-${{ matrix.shard }}.jsonl
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("exhaustive-${{ matrix.shard }}.jsonl")
+          rows = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+          assert rows, "empty shard"
+          assert len({int(x["nr"]) for x in rows}) == len(rows), "duplicate ids in shard"
+          print({"rows": len(rows), "verdicts": {v: sum(r["verdict"] == v for r in rows) for v in sorted({r["verdict"] for r in rows})}})
+          PY
+      - name: Upload shard result
+        uses: actions/upload-artifact@v4
+        with:
+          name: exhaustive-results-${{ matrix.shard }}
+          path: exhaustive-${{ matrix.shard }}.jsonl
+          retention-days: 2
+          if-no-files-found: error
+
+  combine:
+    name: Combine, self-test, and validate all 1,041 decisions
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: exhaustive-results-*
+          path: shard-results
+      - name: Combine and run hard validation gates
+        run: |
+          python - <<'PY'
+          import glob, json, pathlib, statistics
+
+          rows = []
+          for path in glob.glob("shard-results/**/*.jsonl", recursive=True):
+              for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+                  if line.strip():
+                      rows.append(json.loads(line))
+          by_nr = {int(row["nr"]): row for row in rows}
+          final = [by_nr[nr] for nr in sorted(by_nr)]
+
+          errors = []
+          if len(final) != 1041:
+              errors.append(f"Expected 1041 unique results, got {len(final)}")
+          if len(rows) != len(by_nr):
+              errors.append(f"Duplicate rows: {len(rows) - len(by_nr)}")
+
+          allowed_verdicts = {"Aufnehmen", "Nicht aufnehmen"}
+          allowed_confidence = {"Sehr hoch", "Hoch"}
+          for row in final:
+              nr = int(row["nr"])
+              if row.get("verdict") not in allowed_verdicts:
+                  errors.append(f"#{nr}: invalid verdict {row.get('verdict')!r}")
+              if row.get("confidence") not in allowed_confidence:
+                  errors.append(f"#{nr}: invalid confidence {row.get('confidence')!r}")
+              if not row.get("reason"):
+                  errors.append(f"#{nr}: missing reason")
+              if not row.get("claim_scope"):
+                  errors.append(f"#{nr}: missing claim scope")
+              cov = row.get("coverage") or {}
+              if row.get("verdict") == "Nicht aufnehmen":
+                  if int(cov.get("search_attempts", 0)) < 27:
+                      errors.append(f"#{nr}: negative lacks full multi-engine search coverage")
+                  if not cov.get("archive_attempted"):
+                      errors.append(f"#{nr}: negative lacks archive pass")
+                  if not cov.get("commoncrawl_attempted"):
+                      errors.append(f"#{nr}: negative lacks Common Crawl pass")
+                  if int(cov.get("official_pages", 0)) < 3 and not cov.get("browser_attempted"):
+                      errors.append(f"#{nr}: sparse negative lacks browser fallback")
+
+          positive_controls = {109, 161, 702, 1946}
+          negative_controls = {969, 1062, 2579, 3250}
+          for nr in positive_controls:
+              row = by_nr.get(nr)
+              if not row or row.get("verdict") != "Aufnehmen":
+                  errors.append(f"Positive regression control #{nr} was not recovered")
+          for nr in negative_controls:
+              row = by_nr.get(nr)
+              if not row or row.get("verdict") != "Nicht aufnehmen":
+                  errors.append(f"Negative/digital-accessibility control #{nr} was falsely included")
+
+          verdict_counts = {v: sum(r["verdict"] == v for r in final) for v in sorted(allowed_verdicts)}
+          confidence_counts = {v: sum(r["confidence"] == v for r in final) for v in sorted(allowed_confidence)}
+          phase_hits = {}
+          for row in final:
+              for phase, count in (row.get("phase_new_hits") or {}).items():
+                  phase_hits[phase] = phase_hits.get(phase, 0) + int(count)
+          negative_rows = [r for r in final if r["verdict"] == "Nicht aufnehmen"]
+          coverage_summary = {
+              "rows": len(final),
+              "verdicts": verdict_counts,
+              "confidence": confidence_counts,
+              "phase_new_hits": dict(sorted(phase_hits.items())),
+              "negative_rows": len(negative_rows),
+              "negative_all_multi_engine": all(int((r.get("coverage") or {}).get("search_attempts", 0)) >= 27 for r in negative_rows),
+              "negative_all_archive": all((r.get("coverage") or {}).get("archive_attempted") for r in negative_rows),
+              "negative_all_commoncrawl": all((r.get("coverage") or {}).get("commoncrawl_attempted") for r in negative_rows),
+              "median_pages": statistics.median([int((r.get("coverage") or {}).get("all_pages", 0)) for r in final]) if final else 0,
+              "median_checked_urls": statistics.median([int((r.get("coverage") or {}).get("checked_urls", 0)) for r in final]) if final else 0,
+              "positive_controls": {str(nr): by_nr.get(nr, {}).get("verdict") for nr in sorted(positive_controls)},
+              "negative_controls": {str(nr): by_nr.get(nr, {}).get("verdict") for nr in sorted(negative_controls)},
+              "validation_errors": errors,
+          }
+
+          pathlib.Path("barrierefrei-exhaustive-results.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
+          with pathlib.Path("barrierefrei-exhaustive-results.jsonl").open("w", encoding="utf-8") as fh:
+              for row in final:
+                  fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+          pathlib.Path("barrierefrei-exhaustive-validation.json").write_text(json.dumps(coverage_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(coverage_summary, ensure_ascii=False, indent=2))
+          if errors:
+              raise SystemExit("Hard validation gates failed: " + " | ".join(errors[:30]))
+          PY
+      - name: Upload complete validated result
+        uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-exhaustive-all
+          path: |
+            barrierefrei-exhaustive-results.json
+            barrierefrei-exhaustive-results.jsonl
+            barrierefrei-exhaustive-validation.json
+          retention-days: 2
+          if-no-files-found: error
