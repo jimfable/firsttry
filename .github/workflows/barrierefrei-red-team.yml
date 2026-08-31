@@ -1,0 +1,295 @@
+name: Independent Barrierefrei Red-Team and Saturation Audit
+
+on:
+  push:
+    paths:
+      - "audit/primary-results.json"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  red_team:
+    name: Independent red-team shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Enforce query-exhaustion patches and compile
+        run: |
+          python audit/ensure_exhaustion.py
+          python -m py_compile audit/adversarial.py audit/saturation.py
+      - name: Run independent red-team
+        run: |
+          python audit/adversarial.py \
+            --queue-url https://raw.githubusercontent.com/jimfable/firsttry/main/audit/primary-results.json \
+            --shard ${{ matrix.shard }} \
+            --shards 32 \
+            --out red-team-${{ matrix.shard }}.jsonl
+      - name: Validate shard
+        run: |
+          test -s red-team-${{ matrix.shard }}.jsonl
+          python - <<'PY'
+          import json, pathlib
+          rows=[json.loads(x) for x in pathlib.Path("red-team-${{ matrix.shard }}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+          assert rows
+          assert len(rows)==len({int(r["nr"]) for r in rows})
+          print({"rows":len(rows),"changed":sum(bool(r.get("changed")) for r in rows)})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: red-team-results-${{ matrix.shard }}
+          path: red-team-${{ matrix.shard }}.jsonl
+          retention-days: 2
+          if-no-files-found: error
+
+  red_combine:
+    name: Combine and validate independent red-team
+    needs: red_team
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: red-team-results-*
+          path: red-team-shards
+      - name: Combine and validate
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib
+          rows=[]
+          for p in glob.glob("red-team-shards/**/*.jsonl",recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding="utf-8").splitlines() if x.strip()]
+          by_nr={int(r["nr"]):r for r in rows}; final=[by_nr[n] for n in sorted(by_nr)]
+          errors=[]
+          if len(final)!=1041: errors.append(f"Expected 1041 rows, got {len(final)}")
+          if len(rows)!=len(by_nr): errors.append("Duplicate ids")
+          for r in final:
+              nr=int(r["nr"])
+              if r.get("final_verdict") not in {"Aufnehmen","Nicht aufnehmen"}: errors.append(f"#{nr} invalid verdict")
+              if r.get("final_confidence") not in {"Sehr hoch","Hoch"}: errors.append(f"#{nr} invalid confidence")
+              if int(r.get("query_attempts",0))<85: errors.append(f"#{nr} incomplete independent search families")
+              if not r.get("reason") or not r.get("claim_scope"): errors.append(f"#{nr} missing rationale")
+          pos={109,161,702,1946}; neg={969,1062,2579,3250}
+          for nr in pos:
+              if by_nr.get(nr,{}).get("final_verdict")!="Aufnehmen": errors.append(f"positive control #{nr} failed red-team")
+          for nr in neg:
+              if by_nr.get(nr,{}).get("final_verdict")!="Nicht aufnehmen": errors.append(f"negative control #{nr} failed red-team")
+          report={
+              "rows":len(final),
+              "verdicts":{v:sum(r["final_verdict"]==v for r in final) for v in ["Aufnehmen","Nicht aufnehmen"]},
+              "changes":sum(bool(r.get("changed")) for r in final),
+              "negative_to_positive":sum(r.get("primary_verdict")=="Nicht aufnehmen" and r.get("final_verdict")=="Aufnehmen" for r in final),
+              "positive_to_negative":sum(r.get("primary_verdict")=="Aufnehmen" and r.get("final_verdict")=="Nicht aufnehmen" for r in final),
+              "providers":sorted({p for r in final for p in (r.get("providers_succeeded") or [])}),
+              "round_hits":{},
+              "errors":errors,
+          }
+          for r in final:
+              for k,v in (r.get("new_hits_by_round") or {}).items(): report["round_hits"][k]=report["round_hits"].get(k,0)+int(v)
+          pathlib.Path("red-team-results.json").write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding="utf-8")
+          pathlib.Path("red-team-validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          if errors: raise SystemExit("Red-team validation failed: "+" | ".join(errors[:40]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: red-team-combined
+          path: |
+            red-team-results.json
+            red-team-validation.json
+          retention-days: 2
+          if-no-files-found: error
+
+  saturation_one:
+    name: Long-tail saturation 1 shard ${{ matrix.shard }}
+    needs: red_combine
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python audit/ensure_exhaustion.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: red-team-combined
+      - name: Run saturation pass 1
+        run: |
+          python audit/saturation.py \
+            --queue red-team-results.json \
+            --shard ${{ matrix.shard }} \
+            --shards 32 \
+            --out saturation-one-${{ matrix.shard }}.jsonl
+      - name: Validate shard
+        run: test -s saturation-one-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saturation-one-results-${{ matrix.shard }}
+          path: saturation-one-${{ matrix.shard }}.jsonl
+          retention-days: 2
+          if-no-files-found: error
+
+  saturation_one_combine:
+    name: Combine saturation 1 and normalize for repeat
+    needs: saturation_one
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: saturation-one-results-*
+          path: saturation-one-shards
+      - name: Combine and normalize
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib
+          rows=[]
+          for p in glob.glob("saturation-one-shards/**/*.jsonl",recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding="utf-8").splitlines() if x.strip()]
+          by_nr={int(r["nr"]):r for r in rows}; final=[by_nr[n] for n in sorted(by_nr)]
+          if len(final)!=1041 or len(rows)!=len(by_nr): raise SystemExit(f"Invalid saturation-one coverage: {len(final)} unique / {len(rows)} rows")
+          normalized=[]
+          for r in final:
+              n=dict(r)
+              n["final_verdict"]=r["saturation_verdict"]
+              n["final_confidence"]=r["saturation_confidence"]
+              n["reason"]=r["saturation_reason"]
+              n["source_url"]=r.get("saturation_source") or r.get("source_url","")
+              normalized.append(n)
+          report={
+              "rows":len(final),
+              "verdicts":{v:sum(r["saturation_verdict"]==v for r in final) for v in ["Aufnehmen","Nicht aufnehmen"]},
+              "new_positives":sum(bool(r.get("saturation_changed")) for r in final),
+          }
+          pathlib.Path("saturation-one-results.json").write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding="utf-8")
+          pathlib.Path("saturation-repeat-queue.json").write_text(json.dumps(normalized,ensure_ascii=False,indent=2),encoding="utf-8")
+          pathlib.Path("saturation-one-validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saturation-one-combined
+          path: |
+            saturation-one-results.json
+            saturation-repeat-queue.json
+            saturation-one-validation.json
+          retention-days: 2
+          if-no-files-found: error
+
+  saturation_repeat:
+    name: Saturation repeat shard ${{ matrix.shard }}
+    needs: saturation_one_combine
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python audit/ensure_exhaustion.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: saturation-one-combined
+      - name: Repeat saturation against remaining negatives
+        run: |
+          python audit/saturation.py \
+            --queue saturation-repeat-queue.json \
+            --shard ${{ matrix.shard }} \
+            --shards 32 \
+            --out saturation-repeat-${{ matrix.shard }}.jsonl
+      - run: test -s saturation-repeat-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saturation-repeat-results-${{ matrix.shard }}
+          path: saturation-repeat-${{ matrix.shard }}.jsonl
+          retention-days: 2
+          if-no-files-found: error
+
+  final:
+    name: Final binary decisions and saturation gate
+    needs: saturation_repeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: saturation-repeat-results-*
+          path: saturation-repeat-shards
+      - name: Final combine and zero-new-hit gate
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib,statistics
+          rows=[]
+          for p in glob.glob("saturation-repeat-shards/**/*.jsonl",recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding="utf-8").splitlines() if x.strip()]
+          by_nr={int(r["nr"]):r for r in rows}; final=[by_nr[n] for n in sorted(by_nr)]
+          errors=[]
+          if len(final)!=1041: errors.append(f"Expected 1041 final rows, got {len(final)}")
+          if len(rows)!=len(by_nr): errors.append("Duplicate ids in final repeat")
+          for r in final:
+              nr=int(r["nr"])
+              if r.get("saturation_verdict") not in {"Aufnehmen","Nicht aufnehmen"}: errors.append(f"#{nr} invalid final verdict")
+              if r.get("saturation_confidence") not in {"Sehr hoch","Hoch"}: errors.append(f"#{nr} invalid final confidence")
+              if r.get("saturation_verdict")=="Nicht aufnehmen":
+                  if int(r.get("saturation_query_attempts",0))<92: errors.append(f"#{nr} incomplete saturation queries")
+                  if not r.get("saturation_archive_attempted") or not r.get("saturation_url_index_attempted"): errors.append(f"#{nr} missing archive/url-index challenge")
+          new_hits=[r for r in final if r.get("saturation_changed")]
+          if new_hits: errors.append(f"Saturation not reached: repeat found {len(new_hits)} additional positives")
+          pos={109,161,702,1946}; neg={969,1062,2579,3250}
+          for nr in pos:
+              if by_nr.get(nr,{}).get("saturation_verdict")!="Aufnehmen": errors.append(f"positive control #{nr} failed final")
+          for nr in neg:
+              if by_nr.get(nr,{}).get("saturation_verdict")!="Nicht aufnehmen": errors.append(f"negative control #{nr} failed final")
+          report={
+              "rows":len(final),
+              "verdicts":{v:sum(r["saturation_verdict"]==v for r in final) for v in ["Aufnehmen","Nicht aufnehmen"]},
+              "confidence":{v:sum(r["saturation_confidence"]==v for r in final) for v in ["Sehr hoch","Hoch"]},
+              "repeat_new_hits":len(new_hits),
+              "median_saturation_queries_negative":statistics.median([int(r.get("saturation_query_attempts",0)) for r in final if r.get("saturation_verdict")=="Nicht aufnehmen"]) if any(r.get("saturation_verdict")=="Nicht aufnehmen" for r in final) else 0,
+              "positive_controls":{str(n):by_nr.get(n,{}).get("saturation_verdict") for n in sorted(pos)},
+              "negative_controls":{str(n):by_nr.get(n,{}).get("saturation_verdict") for n in sorted(neg)},
+              "errors":errors,
+          }
+          pathlib.Path("barrierefrei-final-audit-results.json").write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding="utf-8")
+          pathlib.Path("barrierefrei-final-audit-validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          if errors: raise SystemExit("Final saturation gate failed: "+" | ".join(errors[:50]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-final-audit
+          path: |
+            barrierefrei-final-audit-results.json
+            barrierefrei-final-audit-validation.json
+          retention-days: 2
+          if-no-files-found: error
