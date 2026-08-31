@@ -1,0 +1,50 @@
+name: Cancel Superseded Pre-v7 Barrierefrei Runs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-cleanup-pre-v7.yml"
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Remove superseded post-primary workflow definitions
+        run: |
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          for f in \
+            .github/workflows/barrierefrei-adversarial-v5.yml \
+            .github/workflows/barrierefrei-adversarial-v6.yml; do
+            if [ -f "$f" ]; then git rm "$f"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "Remove superseded pre-v7 audit workflows [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Cancel active superseded runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN']
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'pre-v7-cleanup'}
+          with urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?per_page=100',headers=h),timeout=60) as response:
+              runs=json.load(response).get('workflow_runs',[])
+          superseded={'Authoritative Barrierefrei Audit v5 with Domain Discovery','Authoritative Barrierefrei Audit v6 Hardened'}
+          for run in runs:
+              if run.get('name') in superseded and run.get('status') in {'queued','in_progress','waiting','requested','pending'}:
+                  req=urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/cancel",headers=h,method='POST')
+                  try:
+                      urllib.request.urlopen(req,timeout=60).read();print('cancelled',run['id'],run['name'])
+                  except Exception as exc:print('cancel failed',run['id'],exc)
+          PY
