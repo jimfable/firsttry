@@ -1,0 +1,46 @@
+name: Exhaustive Audit Regression Smoke Test
+
+on:
+  push:
+    paths:
+      - "audit/smoke-queue.json"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Run eight-control exhaustive regression test
+        run: |
+          python audit/exhaustive.py \
+            --queue-url https://raw.githubusercontent.com/jimfable/firsttry/main/audit/smoke-queue.json \
+            --shard 0 --shards 1 --out smoke.jsonl
+      - name: Validate regression controls
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          rows=[json.loads(x) for x in pathlib.Path('smoke.jsonl').read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}
+          pos={109,161,702,1946}; neg={969,1062,2579,3250}; errors=[]
+          if len(rows)!=8 or len(by)!=8: errors.append(f'coverage {len(rows)}/{len(by)}')
+          for nr in pos:
+              if by.get(nr,{}).get('verdict')!='Aufnehmen': errors.append(f'positive #{nr} not recovered')
+          for nr in neg:
+              if by.get(nr,{}).get('verdict')!='Nicht aufnehmen': errors.append(f'negative #{nr} false positive')
+          print(json.dumps(rows,ensure_ascii=False,indent=2))
+          if errors: raise SystemExit(' | '.join(errors))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exhaustive-smoke-results
+          path: smoke.jsonl
+          retention-days: 2
