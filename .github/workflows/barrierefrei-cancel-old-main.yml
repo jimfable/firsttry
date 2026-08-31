@@ -1,0 +1,25 @@
+name: Cancel Superseded Original Barrierefrei Run
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-cancel-old-main.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel superseded original run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body --request POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/33410821728/cancel" || true
