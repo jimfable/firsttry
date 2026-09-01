@@ -75,8 +75,58 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  controls:
+    name: Corrected v8 regression controls shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Compile corrected evaluator
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive.py');text=p.read_text(encoding='utf-8')
+          old='for _, obj in sorted(records, reverse=True)[:8]:'
+          new='for _, obj in sorted(records, key=lambda item: (-item[0], str(item[1].get("url", ""))))[:8]:'
+          if old in text:p.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v4.py audit/exhaustive_v5.py audit/exhaustive_v8.py audit/exhaustive_v8_runner.py
+      - name: Run all-fallbacks regression controls
+        run: |
+          set -euo pipefail
+          python audit/exhaustive_v8_runner.py \
+            --queue-file audit/smoke-v3-queue.json \
+            --shard ${{ matrix.shard }} --shards 5 \
+            --out primary-controls-${{ matrix.shard }}.jsonl
+      - name: Validate control shard
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('primary-controls-${{ matrix.shard }}.jsonl')
+          rows=[json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert rows and len(rows)==len({int(r['nr']) for r in rows})
+          assert all(r.get('verdict') in {'Aufnehmen','Nicht aufnehmen'} for r in rows)
+          assert all(r.get('confidence') in {'Hoch','Sehr hoch'} for r in rows)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: primary-controls-${{ matrix.shard }}
+          path: primary-controls-${{ matrix.shard }}.jsonl
+          if-no-files-found: error
+          retention-days: 7
+
   combine:
-    needs: audit
+    needs: [audit, controls]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -89,7 +139,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: primary-v2-*
-          path: shards
+          path: shards-primary
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: primary-controls-*
+          path: shards-controls
       - name: Combine and enforce hard release gates
         run: |
           set -euo pipefail
@@ -97,16 +151,24 @@ jobs:
           python - <<'PY'
           import glob,json,pathlib,statistics
           rows=[]
-          for p in glob.glob('shards/**/*.jsonl',recursive=True):
+          for p in glob.glob('shards-primary/**/*.jsonl',recursive=True):
               rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
           by={int(r['nr']):r for r in rows};errors=[]
           if len(rows)!=len(by):errors.append(f'duplicates={len(rows)-len(by)}')
           if len(by)!=1041:errors.append(f'expected 1041 got {len(by)}')
+
+          control_rows=[]
+          for p in glob.glob('shards-controls/**/*.jsonl',recursive=True):
+              control_rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          controls_by={int(r['nr']):r for r in control_rows}
           controls=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text(encoding='utf-8'))
           expected={int(x['nr']):x['expected'] for x in controls}
+          if len(control_rows)!=len(controls_by) or set(controls_by)!=set(expected):
+              errors.append(f'control coverage mismatch rows={len(control_rows)} unique={len(controls_by)} expected={len(expected)}')
           for nr,want in expected.items():
-              if by.get(nr,{}).get('verdict')!=want:
-                  errors.append(f'control #{nr}: expected {want}, got {by.get(nr,{}).get("verdict")}')
+              if controls_by.get(nr,{}).get('verdict')!=want:
+                  errors.append(f'control #{nr}: expected {want}, got {controls_by.get(nr,{}).get("verdict")}')
+
           digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
           for nr,r in by.items():
               if r.get('verdict') not in {'Aufnehmen','Nicht aufnehmen'}:errors.append(f'#{nr}: invalid verdict')
@@ -130,7 +192,7 @@ jobs:
               'confidence':{v:sum(r.get('confidence')==v for r in final) for v in ('Sehr hoch','Hoch')},
               'median_all_pages':statistics.median([int((r.get('coverage') or {}).get('all_pages') or 0) for r in final]) if final else 0,
               'median_checked_urls':statistics.median([int((r.get('coverage') or {}).get('checked_urls') or 0) for r in final]) if final else 0,
-              'regression_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(expected)},
+              'regression_controls':{str(n):controls_by.get(n,{}).get('verdict') for n in sorted(expected)},
               'validation_errors':errors,
           }
           pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
