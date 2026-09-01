@@ -95,18 +95,18 @@ jobs:
           set -euo pipefail
           mkdir -p results/primary-v2
           python - <<'PY'
-          import glob,json,pathlib,re,statistics,urllib.parse
+          import glob,json,pathlib,statistics
           rows=[]
           for p in glob.glob('shards/**/*.jsonl',recursive=True):
               rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
           by={int(r['nr']):r for r in rows};errors=[]
           if len(rows)!=len(by):errors.append(f'duplicates={len(rows)-len(by)}')
           if len(by)!=1041:errors.append(f'expected 1041 got {len(by)}')
-          positive={109,161,702,1946};negative={969,1062,2579,3250}
-          for n in positive:
-              if by.get(n,{}).get('verdict')!='Aufnehmen':errors.append(f'positive control #{n} failed')
-          for n in negative:
-              if by.get(n,{}).get('verdict')!='Nicht aufnehmen':errors.append(f'negative control #{n} failed')
+          controls=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text(encoding='utf-8'))
+          expected={int(x['nr']):x['expected'] for x in controls}
+          for nr,want in expected.items():
+              if by.get(nr,{}).get('verdict')!=want:
+                  errors.append(f'control #{nr}: expected {want}, got {by.get(nr,{}).get("verdict")}')
           digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
           for nr,r in by.items():
               if r.get('verdict') not in {'Aufnehmen','Nicht aufnehmen'}:errors.append(f'#{nr}: invalid verdict')
@@ -130,14 +130,13 @@ jobs:
               'confidence':{v:sum(r.get('confidence')==v for r in final) for v in ('Sehr hoch','Hoch')},
               'median_all_pages':statistics.median([int((r.get('coverage') or {}).get('all_pages') or 0) for r in final]) if final else 0,
               'median_checked_urls':statistics.median([int((r.get('coverage') or {}).get('checked_urls') or 0) for r in final]) if final else 0,
-              'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positive)},
-              'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negative)},
+              'regression_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(expected)},
               'validation_errors':errors,
           }
           pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
           pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').write_text(json.dumps(val,ensure_ascii=False,indent=2),encoding='utf-8')
           print(json.dumps(val,ensure_ascii=False,indent=2))
-          if errors:raise SystemExit(' | '.join(errors[:60]))
+          if errors:raise SystemExit(' | '.join(errors[:80]))
           PY
       - name: Commit validated corrected primary results
         run: |
