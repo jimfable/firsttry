@@ -5,9 +5,6 @@ on:
   push:
     paths:
       - "results/primary-v2/barrierefrei-primary-v2-results.json"
-      - ".github/workflows/barrierefrei-adversarial-v9.yml"
-      - "audit/adversarial_v7.py"
-      - "audit/finalize_v3.py"
 
 permissions:
   contents: write
@@ -48,6 +45,8 @@ jobs:
           val=json.loads(pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').read_text())
           assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
           assert not val.get('validation_errors'),val
+          assert val['positive_controls']=={'109':'Aufnehmen','161':'Aufnehmen','702':'Aufnehmen','1946':'Aufnehmen'}
+          assert val['negative_controls']=={'969':'Nicht aufnehmen','1062':'Nicht aufnehmen','2579':'Nicht aufnehmen','3250':'Nicht aufnehmen'}
           PY
       - name: Install independent research dependencies
         run: python -m pip install --disable-pip-version-check requests beautifulsoup4 lxml selenium
@@ -82,7 +81,7 @@ jobs:
           name: adversarial-v9-${{ matrix.shard }}
           path: adversarial-v9-${{ matrix.shard }}.jsonl
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 7
 
   finalize:
     needs: verify
@@ -128,7 +127,8 @@ jobs:
           assert all(r.get('reason') and r.get('decision_scope') for r in rows)
           assert all(r.get('source_url') for r in rows if r['verdict']=='Aufnehmen')
           assert not val.get('validation_errors'),val
-          assert all(v=='Aufnehmen' for v in val['positive_controls'].values()) and all(v=='Nicht aufnehmen' for v in val['negative_controls'].values())
+          assert val['positive_controls']=={'109':'Aufnehmen','161':'Aufnehmen','702':'Aufnehmen','1946':'Aufnehmen'}
+          assert val['negative_controls']=={'969':'Nicht aufnehmen','1062':'Nicht aufnehmen','2579':'Nicht aufnehmen','3250':'Nicht aufnehmen'}
           PY
       - name: Commit authoritative final-v9 result set
         run: |
@@ -146,4 +146,4 @@ jobs:
             results/primary-v2
             results/adversarial-v9
             results/final-v9
-          retention-days: 7
+          retention-days: 14
