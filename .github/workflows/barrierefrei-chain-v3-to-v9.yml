@@ -1,0 +1,112 @@
+name: Chain Strict Primary v3 to Independent v9 and Final Release
+
+on:
+  push:
+    paths:
+      - "results/primary-v3/barrierefrei-primary-v3-validation.json"
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: barrierefrei-v3-authoritative-chain
+  cancel-in-progress: false
+
+jobs:
+  chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate v3 and publish compatibility input for independent v9
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,shutil
+          src=pathlib.Path('results/primary-v3')
+          rows=json.loads((src/'barrierefrei-primary-v3-results.json').read_text(encoding='utf-8'))
+          val=json.loads((src/'barrierefrei-primary-v3-validation.json').read_text(encoding='utf-8'))
+          assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
+          assert not val.get('validation_errors'),val
+          assert val.get('implementation')=='exhaustive_v3_fail_closed'
+          assert all(r.get('verdict') in {'Aufnehmen','Nicht aufnehmen'} for r in rows)
+          assert all(r.get('confidence') in {'Hoch','Sehr hoch'} for r in rows)
+          dst=pathlib.Path('results/primary-v2');dst.mkdir(parents=True,exist_ok=True)
+          (dst/'barrierefrei-primary-v2-results.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          compatible=dict(val);compatible['compatibility_alias']='strict-primary-v3-as-primary-v2-input'
+          (dst/'barrierefrei-primary-v2-validation.json').write_text(json.dumps(compatible,ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/primary-v2
+          git commit -m "Publish strict primary-v3 as v9 compatibility input [skip ci]"
+          git push origin HEAD:main
+      - name: Dispatch independent functional-bundle v9 counter-audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          date -u +%s > /tmp/v9-start
+          gh workflow run barrierefrei-adversarial-v9.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Wait for successful v9 result and committed validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,time,urllib.request,pathlib
+          repo=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];started=int(pathlib.Path('/tmp/v9-start').read_text())
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'barrierefrei-v3-chain'}
+          deadline=time.time()+7*3600;chosen=None
+          while True:
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?branch=main&per_page=50',headers=h)
+              with urllib.request.urlopen(req,timeout=60) as response:runs=json.load(response).get('workflow_runs',[])
+              matches=[]
+              for run in runs:
+                  if run.get('path')!='.github/workflows/barrierefrei-adversarial-v9.yml':continue
+                  created=run.get('created_at','')
+                  try: epoch=int(time.mktime(time.strptime(created,'%Y-%m-%dT%H:%M:%SZ')))
+                  except Exception: epoch=0
+                  if epoch>=started-10:matches.append(run)
+              if matches:
+                  chosen=sorted(matches,key=lambda x:x.get('created_at',''),reverse=True)[0]
+                  print('v9',chosen.get('id'),chosen.get('status'),chosen.get('conclusion'),flush=True)
+                  if chosen.get('status')=='completed':
+                      if chosen.get('conclusion')!='success':raise SystemExit(f'v9 failed: {chosen.get("id")} {chosen.get("conclusion")}')
+                      break
+              if time.time()>deadline:raise SystemExit(f'v9 timeout; latest={chosen}')
+              time.sleep(45)
+          for path in ('results/final-v9/barrierefrei-final-results.json','results/final-v9/barrierefrei-final-validation.json'):
+              for _ in range(30):
+                  try:
+                      urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/contents/{path}?ref=main',headers=h),timeout=60).read();break
+                  except Exception:time.sleep(15)
+              else:raise SystemExit(f'missing committed v9 file: {path}')
+          PY
+      - name: Dispatch independently validating final workbook publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          date -u +%s > /tmp/publisher-start
+          gh workflow run barrierefrei-publish-final-v9.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Wait for final release and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS+7200))
+          until gh release view barrierefrei-audit-final-v9 --repo "$GITHUB_REPOSITORY" --json tagName,name,assets,url > /tmp/release.json 2>/tmp/release.err; do
+            if (( SECONDS > deadline )); then cat /tmp/release.err; exit 1; fi
+            sleep 30
+          done
+          python - <<'PY'
+          import json,pathlib
+          data=json.loads(pathlib.Path('/tmp/release.json').read_text())
+          names={a['name'] for a in data.get('assets',[])}
+          required={'barrierefrei_profis_1041_FINAL_v9.xlsx','barrierefrei_profis_1041_EVIDENZ_v9.zip'}
+          assert required<=names,(required,names)
+          print(json.dumps(data,ensure_ascii=False,indent=2))
+          PY
