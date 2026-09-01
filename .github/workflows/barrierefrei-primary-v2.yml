@@ -10,16 +10,19 @@ permissions:
   contents: write
   actions: read
 
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
   audit:
-    name: Exhaustive primary shard ${{ matrix.shard }}
+    name: Corrected v8 primary shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 345
     strategy:
       fail-fast: false
-      max-parallel: 16
+      max-parallel: 24
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,11 +30,23 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
-      - name: Run exhaustive primary audit
+      - name: Compile corrected evaluator
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive.py');text=p.read_text(encoding='utf-8')
+          old='for _, obj in sorted(records, reverse=True)[:8]:'
+          new='for _, obj in sorted(records, key=lambda item: (-item[0], str(item[1].get("url", ""))))[:8]:'
+          if old in text:p.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v4.py audit/exhaustive_v5.py audit/exhaustive_v8.py audit/exhaustive_v8_runner.py
+      - name: Run exhaustive corrected v8 audit
         run: |
           set -euo pipefail
-          python audit/exhaustive.py --shard ${{ matrix.shard }} --shards 16 --out primary-v2-${{ matrix.shard }}.jsonl
-      - name: Validate shard output and negative coverage
+          python audit/exhaustive_v8_runner.py \
+            --shard ${{ matrix.shard }} --shards 24 \
+            --out primary-v2-${{ matrix.shard }}.jsonl
+      - name: Validate every shard row
         run: |
           python - <<'PY'
           import json,pathlib
@@ -41,20 +56,24 @@ jobs:
           for r in rows:
               assert r.get('verdict') in {'Aufnehmen','Nicht aufnehmen'}
               assert r.get('confidence') in {'Hoch','Sehr hoch'}
-              assert r.get('reason')
+              assert r.get('reason') and r.get('claim_scope')
+              assert r.get('implementation')=='exhaustive_v8_identity_locked_all_fallbacks'
+              assert int(r.get('runner_attempts') or 0)>=1
               c=r.get('coverage') or {}
-              if r['verdict']=='Nicht aufnehmen':
-                  assert int(r.get('search_attempts') or c.get('search_attempts') or 0)>=27
+              if r['verdict']=='Aufnehmen':
+                  assert r.get('source_url') and r.get('positive_evidence')
+              else:
+                  assert int(c.get('search_attempts') or 0)>=27
                   assert c.get('archive_attempted') is True
-                  assert c.get('common_crawl_attempted') is True
-                  assert c.get('browser_attempted') is True or int(c.get('official_pages') or 0)>=3
+                  assert c.get('commoncrawl_attempted') is True
+                  assert c.get('browser_attempted') is True
           PY
       - uses: actions/upload-artifact@v4
         with:
           name: primary-v2-${{ matrix.shard }}
           path: primary-v2-${{ matrix.shard }}.jsonl
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 7
 
   combine:
     needs: audit
@@ -64,45 +83,73 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
           pattern: primary-v2-*
           path: shards
-      - name: Combine, validate controls, and write primary-v2
+      - name: Combine and enforce hard release gates
         run: |
           set -euo pipefail
           mkdir -p results/primary-v2
           python - <<'PY'
-          import glob,json,pathlib
+          import glob,json,pathlib,re,statistics,urllib.parse
           rows=[]
           for p in glob.glob('shards/**/*.jsonl',recursive=True):
               rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
-          by={int(r['nr']):r for r in rows}
-          errors=[]
-          if len(rows)!=len(by): errors.append(f'duplicates={len(rows)-len(by)}')
-          if len(by)!=1041: errors.append(f'expected 1041 got {len(by)}')
-          positive={109,161,702,1946}; negative={969,1062,2579,3250}
+          by={int(r['nr']):r for r in rows};errors=[]
+          if len(rows)!=len(by):errors.append(f'duplicates={len(rows)-len(by)}')
+          if len(by)!=1041:errors.append(f'expected 1041 got {len(by)}')
+          positive={109,161,702,1946};negative={969,1062,2579,3250}
           for n in positive:
-              if by.get(n,{}).get('verdict')!='Aufnehmen': errors.append(f'positive control #{n} failed')
+              if by.get(n,{}).get('verdict')!='Aufnehmen':errors.append(f'positive control #{n} failed')
           for n in negative:
-              if by.get(n,{}).get('verdict')!='Nicht aufnehmen': errors.append(f'negative control #{n} failed')
+              if by.get(n,{}).get('verdict')!='Nicht aufnehmen':errors.append(f'negative control #{n} failed')
+          digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          for nr,r in by.items():
+              if r.get('verdict') not in {'Aufnehmen','Nicht aufnehmen'}:errors.append(f'#{nr}: invalid verdict')
+              if r.get('confidence') not in {'Hoch','Sehr hoch'}:errors.append(f'#{nr}: invalid confidence')
+              if not r.get('reason') or not r.get('claim_scope'):errors.append(f'#{nr}: missing explanation')
+              if r.get('implementation')!='exhaustive_v8_identity_locked_all_fallbacks':errors.append(f'#{nr}: wrong implementation')
+              source=(r.get('source_url') or '').lower()
+              if r.get('verdict')=='Aufnehmen':
+                  if not source or not r.get('positive_evidence'):errors.append(f'#{nr}: positive lacks evidence')
+                  if any(x in source for x in digital):errors.append(f'#{nr}: digital-accessibility source')
+              else:
+                  c=r.get('coverage') or {}
+                  if int(c.get('search_attempts') or 0)<27:errors.append(f'#{nr}: insufficient search coverage')
+                  if c.get('archive_attempted') is not True:errors.append(f'#{nr}: archive missing')
+                  if c.get('browser_attempted') is not True:errors.append(f'#{nr}: browser missing')
+                  if c.get('commoncrawl_attempted') is not True:errors.append(f'#{nr}: Common Crawl missing')
           final=[by[n] for n in sorted(by)]
-          val={'rows':len(final),'verdicts':{v:sum(r.get('verdict')==v for r in final) for v in ('Aufnehmen','Nicht aufnehmen')},'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positive)},'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negative)},'validation_errors':errors}
+          val={
+              'rows':len(final),
+              'verdicts':{v:sum(r.get('verdict')==v for r in final) for v in ('Aufnehmen','Nicht aufnehmen')},
+              'confidence':{v:sum(r.get('confidence')==v for r in final) for v in ('Sehr hoch','Hoch')},
+              'median_all_pages':statistics.median([int((r.get('coverage') or {}).get('all_pages') or 0) for r in final]) if final else 0,
+              'median_checked_urls':statistics.median([int((r.get('coverage') or {}).get('checked_urls') or 0) for r in final]) if final else 0,
+              'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positive)},
+              'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negative)},
+              'validation_errors':errors,
+          }
           pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
           pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').write_text(json.dumps(val,ensure_ascii=False,indent=2),encoding='utf-8')
-          if errors: raise SystemExit(' | '.join(errors))
+          print(json.dumps(val,ensure_ascii=False,indent=2))
+          if errors:raise SystemExit(' | '.join(errors[:60]))
           PY
-      - name: Commit validated primary-v2 results
+      - name: Commit validated corrected primary results
         run: |
           set -euo pipefail
           git config user.name "barrierefrei-audit-bot"
           git config user.email "168410842+jimfable@users.noreply.github.com"
           git pull --rebase origin main
           git add results/primary-v2
-          git commit -m "Store fresh exhaustive primary-v2 audit [skip ci]"
+          git commit -m "Store corrected identity-locked primary audit [skip ci]"
           git push origin HEAD:main
       - uses: actions/upload-artifact@v4
         with:
           name: barrierefrei-primary-v2-validated
           path: results/primary-v2
-          retention-days: 7
+          retention-days: 14
