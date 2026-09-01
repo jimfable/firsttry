@@ -1,0 +1,20 @@
+name: Trigger fixed-point saturation audit
+
+on:
+  push:
+    paths:
+      - "results/final-v9/barrierefrei-final-results.json"
+      - "results/final-v9/barrierefrei-final-validation.json"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch independent fixed-point audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run barrierefrei-saturation-v11.yml --repo "${{ github.repository }}" --ref main
