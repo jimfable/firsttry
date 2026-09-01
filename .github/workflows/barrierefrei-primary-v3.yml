@@ -1,0 +1,156 @@
+name: Strict Exhaustive Barrierefrei Primary Audit v3
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "audit/start-primary-v3.txt"
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: barrierefrei-primary-v3
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SHARDS: "32"
+
+jobs:
+  audit:
+    name: Strict primary-v3 shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exhaustive research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Compile and apply spelling guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive_v3.py')
+          text=p.read_text(encoding='utf-8').replace('underfahrbar','unterfahrbar')
+          p.write_text(text,encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v3_runner.py
+      - name: Run fail-closed exhaustive primary audit
+        run: |
+          set -euo pipefail
+          python audit/exhaustive_v3_runner.py \
+            --shard ${{ matrix.shard }} --shards "$SHARDS" \
+            --out primary-v3-${{ matrix.shard }}.jsonl
+      - name: Validate exact shard coverage and hard quality gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,urllib.request,urllib.parse
+          shard=int('${{ matrix.shard }}'); shards=int('${{ env.SHARDS }}')
+          queue=json.loads(urllib.request.urlopen('https://raw.githubusercontent.com/jimfable/firsttry/5727c4fe218445b6e124a2cf8978473c898ffc6c/audit/queue.json',timeout=60).read())
+          expected=[int(r['nr']) for i,r in enumerate(queue) if i%shards==shard]
+          p=pathlib.Path(f'primary-v3-{shard}.jsonl')
+          rows=[json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}; errors=[]
+          if len(rows)!=len(by): errors.append(f'duplicates={len(rows)-len(by)}')
+          if set(by)!=set(expected): errors.append(f'coverage missing={sorted(set(expected)-set(by))} extra={sorted(set(by)-set(expected))}')
+          digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          bad_hosts={'northdata.de','companyhouse.de','firmenwissen.de','dnb.com','stadtquartier-tiefesfeld.de','creutz-dachtech.de'}
+          for nr,row in by.items():
+              if row.get('verdict') not in {'Aufnehmen','Nicht aufnehmen'}: errors.append(f'#{nr}: verdict')
+              if row.get('confidence') not in {'Hoch','Sehr hoch'}: errors.append(f'#{nr}: confidence')
+              if not row.get('reason') or not row.get('claim_scope'): errors.append(f'#{nr}: missing reasoning')
+              if int(row.get('runner_attempts') or 0)<1: errors.append(f'#{nr}: runner attempts absent')
+              cov=row.get('coverage') or {}
+              if row.get('verdict')=='Aufnehmen':
+                  source=str(row.get('source_url') or '').lower(); host=urllib.parse.urlsplit(source).netloc.lower().removeprefix('www.')
+                  if not source or not row.get('positive_evidence'): errors.append(f'#{nr}: positive evidence absent')
+                  if host in bad_hosts: errors.append(f'#{nr}: untrusted positive source {host}')
+                  if any(part in source for part in digital): errors.append(f'#{nr}: digital source')
+              else:
+                  if int(cov.get('search_attempts') or 0)<42: errors.append(f'#{nr}: search coverage {cov.get("search_attempts")}')
+                  if cov.get('archive_attempted') is not True: errors.append(f'#{nr}: archive missing')
+                  if cov.get('commoncrawl_attempted') is not True: errors.append(f'#{nr}: common crawl missing')
+                  if not cov.get('identity_verified') and cov.get('browser_attempted') is not True: errors.append(f'#{nr}: unresolved identity without browser')
+          if errors: raise SystemExit(' | '.join(errors[:50]))
+          print({'shard':shard,'rows':len(rows),'verdicts':{v:sum(r['verdict']==v for r in rows) for v in ('Aufnehmen','Nicht aufnehmen')}})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: primary-v3-${{ matrix.shard }}
+          path: primary-v3-${{ matrix.shard }}.jsonl
+          retention-days: 7
+          if-no-files-found: error
+
+  combine:
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: primary-v3-*
+          path: shards
+      - name: Combine exactly 1,041 and validate regression controls
+        run: |
+          set -euo pipefail
+          mkdir -p results/primary-v3
+          python - <<'PY'
+          import glob,json,pathlib,urllib.parse,statistics
+          rows=[]
+          for p in glob.glob('shards/**/*.jsonl',recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}; errors=[]
+          if len(rows)!=len(by): errors.append(f'duplicates={len(rows)-len(by)}')
+          if len(by)!=1041: errors.append(f'expected 1041 got {len(by)}')
+          positives={109,161,702,1946}; negatives={969,1062,2579,3250}
+          for nr in positives:
+              if by.get(nr,{}).get('verdict')!='Aufnehmen': errors.append(f'positive control #{nr} failed')
+          for nr in negatives:
+              if by.get(nr,{}).get('verdict')!='Nicht aufnehmen': errors.append(f'negative control #{nr} failed')
+          for nr,row in by.items():
+              if row.get('verdict')=='Aufnehmen' and (not row.get('source_url') or not row.get('positive_evidence')):
+                  errors.append(f'#{nr}: positive release evidence missing')
+          final=[by[n] for n in sorted(by)]
+          val={
+            'implementation':'exhaustive_v3_fail_closed',
+            'rows':len(final),
+            'verdicts':{v:sum(r.get('verdict')==v for r in final) for v in ('Aufnehmen','Nicht aufnehmen')},
+            'confidence':{v:sum(r.get('confidence')==v for r in final) for v in ('Sehr hoch','Hoch')},
+            'median_all_pages':statistics.median([int((r.get('coverage') or {}).get('all_pages') or 0) for r in final]) if final else 0,
+            'median_checked_urls':statistics.median([int((r.get('coverage') or {}).get('checked_urls') or 0) for r in final]) if final else 0,
+            'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positives)},
+            'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negatives)},
+            'validation_errors':errors,
+          }
+          pathlib.Path('results/primary-v3/barrierefrei-primary-v3-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
+          pathlib.Path('results/primary-v3/barrierefrei-primary-v3-validation.json').write_text(json.dumps(val,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(val,ensure_ascii=False,indent=2))
+          if errors: raise SystemExit(' | '.join(errors[:50]))
+          PY
+      - name: Commit validated strict primary-v3 results
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/primary-v3
+          git commit -m "Store validated strict primary-v3 Barrierefrei audit"
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-primary-v3-validated
+          path: results/primary-v3
+          retention-days: 10
