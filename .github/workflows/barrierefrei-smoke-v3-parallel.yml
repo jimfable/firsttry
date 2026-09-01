@@ -1,0 +1,85 @@
+name: Strict Barrierefrei Audit Parallel Regression Suite
+
+on:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-smoke-v3-parallel.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  controls:
+    name: Regression shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py
+      - name: Run strict controls
+        run: |
+          python audit/exhaustive_v3.py \
+            --queue-url https://raw.githubusercontent.com/jimfable/firsttry/main/audit/smoke-v3-queue.json \
+            --shard ${{ matrix.shard }} --shards 5 --out smoke-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-control-${{ matrix.shard }}
+          path: smoke-${{ matrix.shard }}.jsonl
+          retention-days: 3
+          if-no-files-found: error
+
+  validate:
+    needs: controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: strict-control-*
+          path: controls
+      - name: Validate all controls and evidence hygiene
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib,urllib.parse
+          expected_rows=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text(encoding='utf-8'))
+          expected={int(x['nr']):x['expected'] for x in expected_rows}
+          rows=[]
+          for p in glob.glob('controls/**/*.jsonl',recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows}; errors=[]
+          if len(rows)!=len(expected) or len(by)!=len(expected): errors.append(f'coverage {len(rows)}/{len(by)} expected {len(expected)}')
+          bad_hosts={'northdata.de','companyhouse.de','firmenwissen.de','dnb.com','stadtquartier-tiefesfeld.de','creutz-dachtech.de'}
+          digital_parts=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          for nr,want in expected.items():
+              row=by.get(nr)
+              if not row: errors.append(f'#{nr} missing'); continue
+              if row.get('verdict')!=want: errors.append(f'#{nr}: expected {want}, got {row.get("verdict")} source={row.get("source_url")}')
+              if row.get('confidence') not in {'Hoch','Sehr hoch'}: errors.append(f'#{nr}: bad confidence')
+              source=(row.get('source_url') or '').lower(); h=urllib.parse.urlsplit(source).netloc.lower().removeprefix('www.')
+              if want=='Aufnehmen':
+                  if not row.get('positive_evidence'): errors.append(f'#{nr}: positive lacks evidence')
+                  if h in bad_hosts: errors.append(f'#{nr}: untrusted source {h}')
+                  if any(x in source for x in digital_parts): errors.append(f'#{nr}: digital page used')
+          pathlib.Path('strict-regression-combined.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps({'rows':len(rows),'verdicts':{v:sum(r['verdict']==v for r in rows) for v in {'Aufnehmen','Nicht aufnehmen'}},'errors':errors},ensure_ascii=False,indent=2))
+          if errors: raise SystemExit('REGRESSION FAILURES: '+' | '.join(errors))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-regression-combined
+          path: strict-regression-combined.json
+          retention-days: 3
