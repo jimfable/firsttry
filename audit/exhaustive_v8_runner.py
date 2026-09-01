@@ -52,15 +52,19 @@ async def guarded(auditor: strict.StrictAuditor, item: dict) -> dict:
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-url", default=base.QUEUE_URL)
+    parser.add_argument("--queue-file")
     parser.add_argument("--shard", type=int, required=True)
     parser.add_argument("--shards", type=int, required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    async with aiohttp.ClientSession(headers={"User-Agent": base.USER_AGENT}) as bootstrap:
-        async with bootstrap.get(args.queue_url, timeout=base.TIMEOUT) as response:
-            response.raise_for_status()
-            queue = json.loads(await response.text())
+    if args.queue_file:
+        queue = json.loads(Path(args.queue_file).read_text(encoding="utf-8"))
+    else:
+        async with aiohttp.ClientSession(headers={"User-Agent": base.USER_AGENT}) as bootstrap:
+            async with bootstrap.get(args.queue_url, timeout=base.TIMEOUT) as response:
+                response.raise_for_status()
+                queue = json.loads(await response.text())
     subset = [item for index, item in enumerate(queue) if index % args.shards == args.shard]
 
     connector = aiohttp.TCPConnector(ssl=False, limit=100, limit_per_host=4, ttl_dns_cache=900)
