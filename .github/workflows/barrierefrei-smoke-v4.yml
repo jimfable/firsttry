@@ -1,0 +1,112 @@
+name: Authoritative Barrierefrei v4 Regression Suite
+
+on:
+  push:
+    paths:
+      - "audit/exhaustive_v4.py"
+      - "audit/exhaustive_v4_runner.py"
+      - "audit/smoke-v3-queue.json"
+      - ".github/workflows/barrierefrei-smoke-v4.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  controls:
+    name: Authoritative v4 control shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Apply deterministic Common Crawl guard and compile
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive.py');text=p.read_text(encoding='utf-8')
+          old='for _, obj in sorted(records, reverse=True)[:8]:'
+          new='for _, obj in sorted(records, key=lambda item: (-item[0], str(item[1].get("url", ""))))[:8]:'
+          if old in text:p.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v4.py audit/exhaustive_v4_runner.py
+      - name: Run fail-closed authoritative controls
+        run: |
+          python audit/exhaustive_v4_runner.py \
+            --queue-url https://raw.githubusercontent.com/jimfable/firsttry/main/audit/smoke-v3-queue.json \
+            --shard ${{ matrix.shard }} --shards 5 \
+            --out smoke-v4-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: authoritative-v4-control-${{ matrix.shard }}
+          path: smoke-v4-${{ matrix.shard }}.jsonl
+          retention-days: 5
+          if-no-files-found: error
+
+  validate:
+    needs: controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: authoritative-v4-control-*
+          path: controls
+      - name: Enforce all expected decisions, identity, recency and evidence hygiene
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib,re,urllib.parse
+          expected_rows=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text(encoding='utf-8'))
+          expected={int(x['nr']):x['expected'] for x in expected_rows}
+          rows=[]
+          for p in glob.glob('controls/**/*.jsonl',recursive=True):
+              rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows};errors=[]
+          if len(rows)!=len(expected) or len(by)!=len(expected):errors.append(f'coverage {len(rows)}/{len(by)} expected {len(expected)}')
+          bad_hosts={'northdata.de','companyhouse.de','firmenwissen.de','dnb.com','stadtquartier-tiefesfeld.de','creutz-dachtech.de','maierusa.com','maier-heidenheim.com','waf.owasp.org'}
+          digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          for nr,want in expected.items():
+              row=by.get(nr)
+              if not row:errors.append(f'#{nr}: missing');continue
+              if row.get('verdict')!=want:errors.append(f'#{nr}: expected {want}, got {row.get("verdict")} source={row.get("source_url")}')
+              if row.get('confidence') not in {'Hoch','Sehr hoch'}:errors.append(f'#{nr}: confidence {row.get("confidence")}')
+              if row.get('implementation')!='exhaustive_v4_fail_closed':errors.append(f'#{nr}: wrong implementation')
+              if int(row.get('runner_attempts') or 0)<1:errors.append(f'#{nr}: missing runner attempts')
+              if row.get('runner_attempt_errors'):errors.append(f'#{nr}: required retry {row.get("runner_attempt_errors")}')
+              source=(row.get('source_url') or '').lower();h=urllib.parse.urlsplit(source).netloc.lower().removeprefix('www.')
+              if want=='Aufnehmen':
+                  if not source or not row.get('positive_evidence'):errors.append(f'#{nr}: positive evidence absent')
+                  if h in bad_hosts:errors.append(f'#{nr}: untrusted source {h}')
+                  if any(x in source for x in digital):errors.append(f'#{nr}: digital page used')
+                  m=re.search(r'/web/(\d{4})',source)
+                  if m and int(m.group(1))<2024:errors.append(f'#{nr}: stale archive positive {source}')
+              else:
+                  cov=row.get('coverage') or {}
+                  if int(cov.get('search_attempts') or 0)<42:errors.append(f'#{nr}: insufficient search attempts')
+                  if cov.get('archive_attempted') is not True:errors.append(f'#{nr}: archive missing')
+                  if cov.get('commoncrawl_attempted') is not True:errors.append(f'#{nr}: common crawl missing')
+          report={'rows':len(rows),'verdicts':{v:sum(r.get('verdict')==v for r in rows) for v in ('Aufnehmen','Nicht aufnehmen')},'errors':errors}
+          pathlib.Path('authoritative-v4-regression.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          pathlib.Path('authoritative-v4-regression-validation.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          if errors:raise SystemExit('REGRESSION FAILURES: '+' | '.join(errors))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: authoritative-v4-regression-combined
+          path: |
+            authoritative-v4-regression.json
+            authoritative-v4-regression-validation.json
+          retention-days: 5
