@@ -12,6 +12,7 @@
   {"nr":2737,"name":"Raabe Sanitär GmbH - Heizungen und Bäder für Köln","city":"Köln","website":"http://www.raabe-sanitaer.de/","expected":"Aufnehmen"},
   {"nr":3210,"name":"VB Heizung Bäder Klima GmbH - Heizung Sanitär Bonn","city":"Bonn","website":"https://heizung-vb.de/","expected":"Aufnehmen"},
   {"nr":3363,"name":"Ziebert SHK Meisterbetrieb - Sanitär und Heizung | Erlangen","city":"Erlangen","website":"http://www.ziebert-bad.de/","expected":"Aufnehmen"},
+  {"nr":2000,"name":"Hornbad: Badausstellung","city":"Berlin","website":"https://www.hornbad.de/badausstellung/charlottenburg/","expected":"Aufnehmen"},
 
   {"nr":969,"name":"Bahlmann Bau GmbH Oldenburg","city":"Oldenburg","website":"https://www.bahlmannbau.de/","expected":"Nicht aufnehmen"},
   {"nr":988,"name":"barrierefreies Rostock gGmbH","city":"Rostock","website":"https://www.barrierefreies-rostock.de/","expected":"Nicht aufnehmen"},
@@ -22,7 +23,6 @@
   {"nr":1405,"name":"DigitalAgentur Brandenburg GmbH","city":"Potsdam","website":"https://digital-agentur.de/","expected":"Nicht aufnehmen"},
   {"nr":1553,"name":"Expolift GmbH","city":"Tönisvorst","website":"http://expolift.com/","expected":"Nicht aufnehmen"},
   {"nr":1659,"name":"funkenburg – Gesellschaft für barrierefreie Kommunikation","city":"Leipzig","website":"http://www.funkenburg.online/","expected":"Nicht aufnehmen"},
-  {"nr":2000,"name":"Hornbad: Badausstellung","city":"Berlin","website":"https://www.hornbad.de/badausstellung/charlottenburg/","expected":"Nicht aufnehmen"},
   {"nr":2579,"name":"Nikoleit Bau GmbH","city":"Wolfsburg","website":"https://www.nikoleit-bau.de/","expected":"Nicht aufnehmen"},
   {"nr":3250,"name":"WAF Bauprojekt GmbH","city":"Magdeburg","website":"http://waf-bauprojekt.de/","expected":"Nicht aufnehmen"}
 ]
