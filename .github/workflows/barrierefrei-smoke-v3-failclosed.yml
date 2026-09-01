@@ -1,0 +1,96 @@
+name: Strict Barrierefrei Fail-Closed Regression Suite
+
+on:
+  push:
+    paths:
+      - ".github/workflows/barrierefrei-smoke-v3-failclosed.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  controls:
+    name: Fail-closed regression shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Apply guarded deterministic fixes and compile
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive_v3.py');p.write_text(p.read_text(encoding='utf-8').replace('underfahrbar','unterfahrbar'),encoding='utf-8')
+          p=Path('audit/exhaustive.py');text=p.read_text(encoding='utf-8')
+          old='for _, obj in sorted(records, reverse=True)[:8]:'
+          new='for _, obj in sorted(records, key=lambda item: (-item[0], str(item[1].get("url", ""))))[:8]:'
+          assert old in text
+          p.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v3_runner.py
+      - name: Run fail-closed controls
+        run: |
+          python audit/exhaustive_v3_runner.py \
+            --queue-url https://raw.githubusercontent.com/jimfable/firsttry/main/audit/smoke-v3-queue.json \
+            --shard ${{ matrix.shard }} --shards 5 --out smoke-fc-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-failclosed-control-${{ matrix.shard }}
+          path: smoke-fc-${{ matrix.shard }}.jsonl
+          retention-days: 3
+          if-no-files-found: error
+
+  validate:
+    needs: controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: strict-failclosed-control-*
+          path: controls
+      - name: Enforce all 25 expected decisions and clean evidence
+        run: |
+          python - <<'PY'
+          import glob,json,pathlib,urllib.parse
+          expected_rows=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text(encoding='utf-8'))
+          expected={int(x['nr']):x['expected'] for x in expected_rows}
+          rows=[]
+          for p in glob.glob('controls/**/*.jsonl',recursive=True):rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows};errors=[]
+          if len(rows)!=len(expected) or len(by)!=len(expected):errors.append(f'coverage {len(rows)}/{len(by)} expected {len(expected)}')
+          bad_hosts={'northdata.de','companyhouse.de','firmenwissen.de','dnb.com','stadtquartier-tiefesfeld.de','creutz-dachtech.de'}
+          digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          for nr,want in expected.items():
+              row=by.get(nr)
+              if not row:errors.append(f'#{nr}: missing');continue
+              if row.get('verdict')!=want:errors.append(f'#{nr}: expected {want}, got {row.get("verdict")} source={row.get("source_url")}')
+              if row.get('confidence') not in {'Hoch','Sehr hoch'}:errors.append(f'#{nr}: confidence')
+              if int(row.get('runner_attempts') or 0)<1:errors.append(f'#{nr}: no fail-closed runner record')
+              source=(row.get('source_url') or '').lower();h=urllib.parse.urlsplit(source).netloc.lower().removeprefix('www.')
+              if want=='Aufnehmen':
+                  if not row.get('positive_evidence'):errors.append(f'#{nr}: no evidence')
+                  if h in bad_hosts:errors.append(f'#{nr}: bad host {h}')
+                  if any(x in source for x in digital):errors.append(f'#{nr}: digital source')
+          pathlib.Path('strict-failclosed-regression.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps({'rows':len(rows),'verdicts':{v:sum(r['verdict']==v for r in rows) for v in ('Aufnehmen','Nicht aufnehmen')},'errors':errors},ensure_ascii=False,indent=2))
+          if errors:raise SystemExit('REGRESSION FAILURES: '+' | '.join(errors))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strict-failclosed-regression-combined
+          path: strict-failclosed-regression.json
+          retention-days: 3
