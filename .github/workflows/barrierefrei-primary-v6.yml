@@ -1,0 +1,166 @@
+name: Authoritative Exhaustive Barrierefrei Primary Audit v6
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "audit/start-primary-v6.txt"
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: barrierefrei-primary-v6
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SHARDS: "48"
+
+jobs:
+  audit:
+    name: Primary-v6 shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Apply deterministic Common Crawl guard and compile
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('audit/exhaustive.py');text=p.read_text(encoding='utf-8')
+          old='for _, obj in sorted(records, reverse=True)[:8]:'
+          new='for _, obj in sorted(records, key=lambda item: (-item[0], str(item[1].get("url", ""))))[:8]:'
+          if old in text:p.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+          python -m py_compile audit/exhaustive.py audit/exhaustive_v3.py audit/exhaustive_v4.py audit/exhaustive_v5.py audit/exhaustive_v6_runner.py
+      - name: Run all-fallbacks fail-closed audit
+        run: |
+          set -euo pipefail
+          python audit/exhaustive_v6_runner.py \
+            --shard ${{ matrix.shard }} --shards "$SHARDS" \
+            --out primary-v6-${{ matrix.shard }}.jsonl
+      - name: Validate exact shard coverage and evidence gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,re,urllib.parse,urllib.request
+          shard=int('${{ matrix.shard }}');shards=int('${{ env.SHARDS }}')
+          queue=json.loads(urllib.request.urlopen('https://raw.githubusercontent.com/jimfable/firsttry/5727c4fe218445b6e124a2cf8978473c898ffc6c/audit/queue.json',timeout=60).read())
+          expected=[int(r['nr']) for i,r in enumerate(queue) if i%shards==shard]
+          path=pathlib.Path(f'primary-v6-{shard}.jsonl')
+          rows=[json.loads(x) for x in path.read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows};errors=[]
+          if len(rows)!=len(by):errors.append(f'duplicates={len(rows)-len(by)}')
+          if set(by)!=set(expected):errors.append(f'coverage missing={sorted(set(expected)-set(by))} extra={sorted(set(by)-set(expected))}')
+          digital=('barrierefreiheitserklaerung','barrierefreiheitserklärung','digitale-barrierefreiheit','accessibility-statement','/bfsg','/bitv','/wcag')
+          bad_hosts={'northdata.de','companyhouse.de','firmenwissen.de','dnb.com','stadtquartier-tiefesfeld.de','creutz-dachtech.de','maierusa.com','maier-heidenheim.com','waf.owasp.org'}
+          for nr,row in by.items():
+              if row.get('implementation')!='exhaustive_v6_all_fallbacks_fail_closed':errors.append(f'#{nr}: implementation')
+              if row.get('verdict') not in {'Aufnehmen','Nicht aufnehmen'}:errors.append(f'#{nr}: verdict')
+              if row.get('confidence') not in {'Hoch','Sehr hoch'}:errors.append(f'#{nr}: confidence')
+              if not row.get('reason') or not row.get('claim_scope'):errors.append(f'#{nr}: missing reasoning')
+              if int(row.get('runner_attempts') or 0)<1:errors.append(f'#{nr}: missing runner attempts')
+              if any(str(e).startswith('fatal:') for e in (row.get('errors') or [])):errors.append(f'#{nr}: fatal error recorded')
+              cov=row.get('coverage') or {}
+              if row.get('verdict')=='Aufnehmen':
+                  source=str(row.get('source_url') or '').lower();host=urllib.parse.urlsplit(source).netloc.lower().removeprefix('www.')
+                  if not source or not row.get('positive_evidence'):errors.append(f'#{nr}: positive evidence absent')
+                  if host in bad_hosts:errors.append(f'#{nr}: untrusted positive source {host}')
+                  if any(part in source for part in digital):errors.append(f'#{nr}: digital source')
+                  m=re.search(r'/web/(\d{4})',source)
+                  if m and int(m.group(1))<2024:errors.append(f'#{nr}: stale archive positive')
+              else:
+                  known=bool(cov.get('verified_official_hosts') or cov.get('provisional_official_hosts'))
+                  minimum=100 if known else 60
+                  if int(cov.get('search_attempts') or 0)<minimum:errors.append(f'#{nr}: search coverage {cov.get("search_attempts")}<{minimum}')
+                  if cov.get('archive_attempted') is not True:errors.append(f'#{nr}: archive missing')
+                  if cov.get('browser_attempted') is not True:errors.append(f'#{nr}: browser missing')
+                  if cov.get('commoncrawl_attempted') is not True:errors.append(f'#{nr}: common crawl missing')
+          if errors:raise SystemExit(' | '.join(errors[:60]))
+          print({'shard':shard,'rows':len(rows),'verdicts':{v:sum(r['verdict']==v for r in rows) for v in ('Aufnehmen','Nicht aufnehmen')},'retry_rows':sum(bool(r.get('runner_attempt_errors')) for r in rows)})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: primary-v6-${{ matrix.shard }}
+          path: primary-v6-${{ matrix.shard }}.jsonl
+          retention-days: 10
+          if-no-files-found: error
+
+  combine:
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: primary-v6-*
+          path: shards
+      - name: Combine all 1,041 and enforce authoritative controls
+        run: |
+          set -euo pipefail
+          mkdir -p results/primary-v6
+          python - <<'PY'
+          import glob,json,pathlib,re,statistics,urllib.parse
+          rows=[]
+          for p in glob.glob('shards/**/*.jsonl',recursive=True):rows += [json.loads(x) for x in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if x.strip()]
+          by={int(r['nr']):r for r in rows};errors=[]
+          if len(rows)!=len(by):errors.append(f'duplicates={len(rows)-len(by)}')
+          if len(by)!=1041:errors.append(f'expected 1041 got {len(by)}')
+          positive_controls={109,161,702,1946};negative_controls={969,1062,2579,3250}
+          for nr in positive_controls:
+              if by.get(nr,{}).get('verdict')!='Aufnehmen':errors.append(f'positive control #{nr} failed')
+          for nr in negative_controls:
+              if by.get(nr,{}).get('verdict')!='Nicht aufnehmen':errors.append(f'negative control #{nr} failed')
+          for nr,row in by.items():
+              if row.get('verdict')=='Aufnehmen' and (not row.get('source_url') or not row.get('positive_evidence')):errors.append(f'#{nr}: positive release evidence missing')
+              if row.get('verdict')=='Nicht aufnehmen':
+                  cov=row.get('coverage') or {}
+                  if not all(cov.get(k) is True for k in ('archive_attempted','browser_attempted','commoncrawl_attempted')):errors.append(f'#{nr}: negative fallback coverage incomplete')
+          final=[by[n] for n in sorted(by)]
+          validation={
+            'implementation':'exhaustive_v6_all_fallbacks_fail_closed',
+            'rows':len(final),
+            'verdicts':{v:sum(r.get('verdict')==v for r in final) for v in ('Aufnehmen','Nicht aufnehmen')},
+            'confidence':{v:sum(r.get('confidence')==v for r in final) for v in ('Sehr hoch','Hoch')},
+            'median_all_pages':statistics.median([int((r.get('coverage') or {}).get('all_pages') or 0) for r in final]) if final else 0,
+            'median_checked_urls':statistics.median([int((r.get('coverage') or {}).get('checked_urls') or 0) for r in final]) if final else 0,
+            'median_search_attempts_negative':statistics.median([int((r.get('coverage') or {}).get('search_attempts') or 0) for r in final if r.get('verdict')=='Nicht aufnehmen']) if any(r.get('verdict')=='Nicht aufnehmen' for r in final) else 0,
+            'retry_rows':sum(bool(r.get('runner_attempt_errors')) for r in final),
+            'positive_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(positive_controls)},
+            'negative_controls':{str(n):by.get(n,{}).get('verdict') for n in sorted(negative_controls)},
+            'validation_errors':errors,
+          }
+          pathlib.Path('results/primary-v6/barrierefrei-primary-v6-results.json').write_text(json.dumps(final,ensure_ascii=False,indent=2),encoding='utf-8')
+          pathlib.Path('results/primary-v6/barrierefrei-primary-v6-validation.json').write_text(json.dumps(validation,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(validation,ensure_ascii=False,indent=2))
+          if errors:raise SystemExit(' | '.join(errors[:60]))
+          PY
+      - name: Commit validated primary-v6 results
+        run: |
+          set -euo pipefail
+          git config user.name "barrierefrei-audit-bot"
+          git config user.email "168410842+jimfable@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/primary-v6
+          git commit -m "Store validated authoritative primary-v6 Barrierefrei audit"
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrierefrei-primary-v6-validated
+          path: results/primary-v6
+          retention-days: 14
