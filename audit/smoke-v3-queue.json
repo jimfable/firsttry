@@ -7,6 +7,7 @@
   {"nr":440,"name":"Munzert Sanitärinstallation GmbH - Badsanierung Hannover","city":"Hannover","website":"https://munzert-sanitaer.de/","expected":"Aufnehmen"},
   {"nr":443,"name":"Nessmann bad & heizung GmbH","city":"Düsseldorf","website":"https://nessmann.de/","expected":"Aufnehmen"},
   {"nr":702,"name":"A. Schirmer GmbH Wasser Wärme Werker","city":"Ulm","website":"http://www.a-schirmer.de/","expected":"Aufnehmen"},
+  {"nr":1062,"name":"Bauservice Sokolowski | Hannover","city":"Hannover","website":"https://bauservice-sokolowski.de/","expected":"Aufnehmen"},
   {"nr":1946,"name":"Hermann Dewald","city":"Heidelberg","website":"http://www.sanitaer-dewald.de/","expected":"Aufnehmen"},
   {"nr":2197,"name":"Klempau GmbH - moderne Bäder, Heizsysteme & Energie","city":"Lübeck","website":"http://www.klempau-shk.de/","expected":"Aufnehmen"},
   {"nr":2737,"name":"Raabe Sanitär GmbH - Heizungen und Bäder für Köln","city":"Köln","website":"http://www.raabe-sanitaer.de/","expected":"Aufnehmen"},
@@ -16,7 +17,6 @@
 
   {"nr":969,"name":"Bahlmann Bau GmbH Oldenburg","city":"Oldenburg","website":"https://www.bahlmannbau.de/","expected":"Nicht aufnehmen"},
   {"nr":988,"name":"barrierefreies Rostock gGmbH","city":"Rostock","website":"https://www.barrierefreies-rostock.de/","expected":"Nicht aufnehmen"},
-  {"nr":1062,"name":"Bauservice Sokolowski | Hannover","city":"Hannover","website":"https://bauservice-sokolowski.de/","expected":"Nicht aufnehmen"},
   {"nr":1207,"name":"Blain Hydraulics GmbH","city":"Heilbronn","website":"https://www.blain.de/","expected":"Nicht aufnehmen"},
   {"nr":1215,"name":"Böcker Maschinenwerke GmbH Niederlassung Berlin","city":"Berlin","website":"http://www.boecker.de/","expected":"Nicht aufnehmen"},
   {"nr":1317,"name":"clearaudio electronic GmbH","city":"Erlangen","website":"http://clearaudio.de/","expected":"Nicht aufnehmen"},
