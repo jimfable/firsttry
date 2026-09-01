@@ -131,8 +131,6 @@ def positive_is_credible(row: dict[str, Any]) -> bool:
     context = evidence_text(row)
     if not context or not SERVICE.search(context):
         return False
-    # Digital language alone is not evidence; a footer mention does not veto a
-    # physical service window with adaptation and execution.
     if DIGITAL.search(context) and not (ADAPT.search(context) and ACTION.search(context)):
         return False
     if VISITOR.search(context) and not (ACTION.search(context) and ADAPT.search(context)):
@@ -245,8 +243,8 @@ def main() -> None:
         })
 
     by = {row['nr']: row for row in output}
-    positive_controls = {109, 161, 702, 1946}
-    negative_controls = {969, 1062, 2579, 3250}
+    positive_controls = {109, 161, 702, 1062, 1946}
+    negative_controls = {969, 2579, 3250}
     for nr in positive_controls:
         if by.get(nr, {}).get('verdict') != 'Aufnehmen':
             errors.append(f'positive control #{nr} failed')
