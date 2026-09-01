@@ -9,14 +9,68 @@ from typing import Any
 
 POS = {"aufnehmen", "relevant", "include", "yes"}
 NEG = {"nicht aufnehmen", "nicht relevant", "exclude", "no"}
-DIGITAL = re.compile(r"(?:bfsg|bitv|wcag|barrierefreiheits(?:erklärung|erklaerung)|digitale\s+barrierefreiheit|screenreader|tastaturnavigation|kontrastmodus)", re.I)
-EXPLICIT = re.compile(r"(?:barrierefrei|barrierearm|altersgerecht|seniorengerecht|generationenbad|behindertengerecht|rollstuhlgerecht|wohnraumanpassung|badewanne.{0,20}dusche|wohnumfeldverbesser)", re.I | re.S)
-SERVICE = re.compile(r"(?:bad|bäder|baeder|badezimmer|dusche|wanne|sanitär|sanitaer|shk|wohnraum|umbau|sanierung|renovierung|fliesen|treppenlift|plattformlift|hublift|homelift|rollstuhllift|personenaufzug|aufzugsanlage|rampe|pflegekasse|kfw|haltegriff|duschsitz|waschtisch|türverbreiter|tuerverbreiter)", re.I)
-LIFT = re.compile(r"(?:treppenlift|plattformlift|hublift|homelift|rollstuhllift|personenaufzug|aufzugsanlage)", re.I)
-ACTION = re.compile(r"(?:wir\s+(?:bieten|planen|bauen|realisieren|sanieren|renovieren|installieren|montieren|verkaufen|vermieten|beraten)|leistungen|unsere\s+leistungen|spezialist|fachbetrieb|beratung|planung|umsetzung|umbau|sanierung|renovierung|modernisierung|einbau|montage|aus\s+einer\s+hand)", re.I)
-VISITOR = re.compile(r"(?:geschäftsräume|geschaeftsraeume|filiale|ausstellung).{0,100}(?:barrierefrei|rollstuhlgerecht)|(?:barrierefrei|rollstuhlgerecht).{0,100}(?:erreichbar|zugänglich|zugaenglich|behindertenparkplatz)", re.I | re.S)
-NEWBUILD = re.compile(r"(?:neubau\s+(?:einer|des|von)|wohnanlage|schule|klinikum|bürogebäude|buero(?:gebäude|gebaeude)|öffentliches\s+gebäude|oeffentliches\s+gebaeude)", re.I)
-ADAPT = re.compile(r"(?:umbau|sanier|renov|modernis|wohnraumanpass|bad|badezimmer|dusche|wanne|haltegriff|duschsitz|lift|aufzug|rampe|türverbreiter|tuerverbreiter)", re.I)
+DIGITAL = re.compile(
+    r"(?:bfsg|bitv|wcag|barrierefreiheits(?:erklärung|erklaerung)|digitale\s+barrierefreiheit|"
+    r"screenreader|tastaturnavigation|kontrastmodus)", re.I
+)
+EXPLICIT = re.compile(
+    r"(?:barriere(?:n)?(?:frei|arm|ärmer|aermer|reduziert|reduzierend)|barrieren(?:abbau|reduzierung)|"
+    r"altersgerecht|seniorengerecht|generationenbad|behindertengerecht|rollstuhlgerecht|"
+    r"wohnraumanpassung|badewanne.{0,30}dusche|dusche.{0,30}(?:statt|anstelle).{0,20}wanne|"
+    r"wohnumfeldverbesser)",
+    re.I | re.S,
+)
+SERVICE = re.compile(
+    r"(?:bad|bäder|baeder|badezimmer|dusche|wanne|sanitär|sanitaer|shk|wohnraum|wohnumfeld|"
+    r"umbau|sanierung|renovierung|fliesen|treppenlift|plattformlift|hublift|homelift|"
+    r"rollstuhllift|personenaufzug|aufzugsanlage|rampe|pflegekasse|pflegegrad|kfw|"
+    r"haltegriff|duschsitz|waschtisch|türverbreiter|tuerverbreiter)",
+    re.I,
+)
+LIFT = re.compile(
+    r"(?:treppenlift|plattformlift|hublift|homelift|rollstuhllift|personenaufzug|aufzugsanlage)", re.I
+)
+ACTION = re.compile(
+    r"(?:"
+    r"wir\s+(?:bieten|planen|bauen|realisieren|sanieren|renovieren|modernisieren|gestalten|"
+    r"installieren|montieren|verkaufen|vermieten|beraten|unterstützen|unterstuetzen|übernehmen|uebernehmen)"
+    r"|(?:unterstütz|unterstuetz)\w*.{0,100}(?:umsetz|ausführ|ausfuehr|sanier|umbau)"
+    r"|setz\w*.{0,55}\bum\b|führ\w*.{0,55}\baus\b|fuehr\w*.{0,55}\baus\b"
+    r"|realisier\w*|installier\w*|montier\w*|übernehm\w*|uebernehm\w*"
+    r"|leistungen|unsere\s+leistungen|spezialist|fachbetrieb|beratung|planung|umsetzung|"
+    r"umbau|sanierung|renovierung|modernisierung|einbau|montage|aus\s+einer\s+hand"
+    r")",
+    re.I | re.S,
+)
+VISITOR = re.compile(
+    r"(?:geschäftsräume|geschaeftsraeume|filiale|ausstellung|parkplatz|eingang|standort)"
+    r".{0,120}(?:barrierefrei|rollstuhlgerecht)|"
+    r"(?:barrierefrei|rollstuhlgerecht).{0,120}(?:erreichbar|zugänglich|zugaenglich|behindertenparkplatz)",
+    re.I | re.S,
+)
+NEWBUILD = re.compile(
+    r"(?:neubau\s+(?:einer|des|von)|wohnanlage|schule|klinikum|bürogebäude|buero(?:gebäude|gebaeude)|"
+    r"öffentliches\s+gebäude|oeffentliches\s+gebaeude)", re.I
+)
+ADAPT = re.compile(
+    r"(?:umbau|sanier|renov|modernis|wohnraumanpass|wohnumfeld|bad|badezimmer|dusche|wanne|"
+    r"haltegriff|duschsitz|lift|aufzug|rampe|türverbreiter|tuerverbreiter)", re.I
+)
+FUNCTIONAL = re.compile(
+    r"(?:"
+    r"(?:bodengleich\w*|ebenerdig\w*|schwellenlos\w*|stufenlos\w*).{0,440}"
+    r"(?:haltegriff\w*|stützgriff\w*|stuetzgriff\w*|duschsitz\w*|pflegekasse|pflegegrad|"
+    r"bewegungsfl(?:ä|ae)che\w*|rollstuhl\w*|senior\w*|alter\w*|rutsch(?:hemm|fest|sicher)\w*)"
+    r"|(?:haltegriff\w*|stützgriff\w*|stuetzgriff\w*|duschsitz\w*|pflegekasse|pflegegrad|"
+    r"bewegungsfl(?:ä|ae)che\w*|rollstuhl\w*|rutsch(?:hemm|fest|sicher)\w*).{0,440}"
+    r"(?:bodengleich\w*|ebenerdig\w*|schwellenlos\w*|stufenlos\w*)"
+    r"|unterfahrbar\w*\s+(?:waschtisch|waschbecken)"
+    r"|türverbreiter\w*|tuerverbreiter\w*"
+    r"|badewanne.{0,55}(?:zur|zu einer|gegen|raus|weg).{0,25}dusche"
+    r"|dusche.{0,55}(?:statt|anstelle).{0,25}(?:badewanne|wanne)"
+    r")",
+    re.I | re.S,
+)
 
 
 def norm(value: Any) -> str:
@@ -28,7 +82,22 @@ def norm(value: Any) -> str:
     return ''
 
 
+def positive_records(row: dict[str, Any]) -> list[dict[str, Any]]:
+    records = row.get('positive_evidence') or row.get('evidence_records') or []
+    if isinstance(records, dict):
+        records = [records]
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
 def evidence_text(row: dict[str, Any]) -> str:
+    records = positive_records(row)
+    if records:
+        ranked = sorted(records, key=lambda record: float(record.get('trust') or record.get('score') or 0), reverse=True)
+        for record in ranked:
+            if str(record.get('snippet') or '').strip():
+                return str(record['snippet'])
     best = row.get('best_evidence')
     if isinstance(best, dict) and best.get('snippet'):
         return str(best['snippet'])
@@ -41,25 +110,42 @@ def evidence_text(row: dict[str, Any]) -> str:
     return str(row.get('reason') or '')
 
 
-def positive_is_credible(row: dict[str, Any]) -> bool:
+def evidence_source(row: dict[str, Any]) -> str:
     source = str(row.get('source_url') or row.get('evidence_url') or '').strip()
+    if source:
+        return source
+    for record in positive_records(row):
+        source = str(record.get('url') or record.get('source_url') or '').strip()
+        if source:
+            return source
+    best = row.get('best_evidence')
+    if isinstance(best, dict):
+        return str(best.get('url') or best.get('source_url') or '').strip()
+    return ''
+
+
+def positive_is_credible(row: dict[str, Any]) -> bool:
+    source = evidence_source(row)
     if not source:
         return False
     context = evidence_text(row)
-    if not context:
+    if not context or not SERVICE.search(context):
         return False
-    # These exclusions act on the evidence window itself, never on a whole page plus footer.
-    if DIGITAL.search(context):
+    # Digital language alone is not evidence; a footer mention does not veto a
+    # physical service window with adaptation and execution.
+    if DIGITAL.search(context) and not (ADAPT.search(context) and ACTION.search(context)):
         return False
     if VISITOR.search(context) and not (ACTION.search(context) and ADAPT.search(context)):
         return False
-    if NEWBUILD.search(context) and not re.search(r"(?:umbau|sanier|renov|modernis|wohnraumanpass)", context, re.I):
-        return False
-    if not SERVICE.search(context):
+    if NEWBUILD.search(context) and not re.search(r"(?:umbau|sanier|renov|modernis|wohnraumanpass|badewanne|dusche\s+statt)", context, re.I):
         return False
     if LIFT.search(context):
-        return bool(re.search(r"(?:montage|einbau|verkauf|mieten|vermiet|beratung|service|wartung|planung|nachrüstung|nachruestung)", context, re.I))
-    return bool(EXPLICIT.search(context) and ACTION.search(context))
+        return bool(re.search(
+            r"(?:montage|einbau|verkauf|mieten|vermiet|beratung|service|wartung|planung|nachrüstung|nachruestung)",
+            context,
+            re.I,
+        ))
+    return bool((EXPLICIT.search(context) or FUNCTIONAL.search(context)) and ACTION.search(context))
 
 
 def load_rows(path: str) -> dict[int, dict[str, Any]]:
@@ -81,6 +167,9 @@ def choose_positive(*rows: dict[str, Any]) -> dict[str, Any] | None:
             score += 6
         if str(row.get('confidence')) == 'Sehr hoch':
             score += 2
+        records = positive_records(row)
+        if records:
+            score += max(float(record.get('trust') or record.get('score') or 0) for record in records) / 25.0
         best = row.get('best_evidence') or {}
         if isinstance(best, dict):
             try:
@@ -122,15 +211,18 @@ def main() -> None:
         if chosen is not None:
             verdict = 'Aufnehmen'
             confidence = 'Sehr hoch' if positive_is_credible(first) and positive_is_credible(second) else 'Hoch'
-            arbitration = 'Mindestens ein identitätsgebundener, expliziter Leistungsabschnitt bestand die strikten Kontextfilter und die unabhängige Gegenprüfung.'
+            arbitration = 'Mindestens ein identitätsgebundener physischer Leistungsabschnitt bestand die strikten Kontextfilter; bei Übereinstimmung beider unabhängigen Wege gilt sehr hohe Sicherheit.'
             reason = chosen.get('reason') or chosen.get('evidence') or arbitration
         else:
             verdict = 'Nicht aufnehmen'
             confidence = 'Sehr hoch' if first_verdict == second_verdict == 'Nicht aufnehmen' else 'Hoch'
-            arbitration = ('Nach zwei vollständigen, getrennt ausgeführten Recherchewegen blieb kein identitätsgebundener expliziter Leistungsabschnitt, der den spezialisierten Aufnahme-Standard erfüllt. Das ist eine Aufnahmeentscheidung, keine Behauptung über jede theoretisch mögliche Einzelarbeit.')
+            arbitration = ('Nach zwei vollständig getrennten Recherchewegen blieb kein identitätsgebundener expliziter oder funktionaler Leistungsabschnitt, der den spezialisierten Aufnahmestandard erfüllt. Das ist eine evidenzbasierte Verzeichnisentscheidung, keine Behauptung über jede theoretisch mögliche Einzelarbeit.')
             reason = arbitration
             chosen = second if second_verdict == 'Nicht aufnehmen' else first
-        source = (chosen.get('source_url') or chosen.get('evidence_url') or first.get('source_url') or second.get('source_url') or first.get('website') or second.get('website') or '')
+        source = (
+            evidence_source(chosen) or evidence_source(first) or evidence_source(second)
+            or first.get('website') or second.get('website') or ''
+        )
         output.append({
             'nr': nr,
             'name': first.get('name') or second.get('name') or '',
@@ -141,6 +233,7 @@ def main() -> None:
             'reason': reason,
             'decision_scope': 'Aufnahme in ein spezialisiertes Verzeichnis für barrierefreien oder altersgerechten Umbau.',
             'source_url': source,
+            'evidence_excerpt': evidence_text(chosen) if verdict == 'Aufnehmen' else '',
             'primary_verdict': first_verdict,
             'adversarial_verdict': second_verdict,
             'disagreement': first_verdict != second_verdict,
@@ -161,8 +254,8 @@ def main() -> None:
         if by.get(nr, {}).get('verdict') != 'Nicht aufnehmen':
             errors.append(f'negative control #{nr} failed')
     for row in output:
-        if row['verdict'] == 'Aufnehmen' and not row['source_url']:
-            errors.append(f"#{row['nr']}: positive lacks source")
+        if row['verdict'] == 'Aufnehmen' and (not row['source_url'] or not row['evidence_excerpt']):
+            errors.append(f"#{row['nr']}: positive lacks source/evidence")
         if row['confidence'] not in {'Hoch', 'Sehr hoch'}:
             errors.append(f"#{row['nr']}: invalid confidence")
         if not row['reason']:
