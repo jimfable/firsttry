@@ -43,10 +43,13 @@ jobs:
           import json,pathlib
           rows=json.loads(pathlib.Path('results/primary-v2/barrierefrei-primary-v2-results.json').read_text())
           val=json.loads(pathlib.Path('results/primary-v2/barrierefrei-primary-v2-validation.json').read_text())
-          assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
+          controls=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text())
+          by={int(r['nr']):r for r in rows}
+          assert len(rows)==1041 and len(by)==1041
           assert not val.get('validation_errors'),val
-          assert val['positive_controls']=={'109':'Aufnehmen','161':'Aufnehmen','702':'Aufnehmen','1946':'Aufnehmen'}
-          assert val['negative_controls']=={'969':'Nicht aufnehmen','1062':'Nicht aufnehmen','2579':'Nicht aufnehmen','3250':'Nicht aufnehmen'}
+          for item in controls:
+              nr=int(item['nr']);want=item['expected']
+              assert by[nr]['verdict']==want,(nr,want,by[nr]['verdict'])
           PY
       - name: Install independent research dependencies
         run: python -m pip install --disable-pip-version-check requests beautifulsoup4 lxml selenium
@@ -116,19 +119,22 @@ jobs:
             --adversarial results/adversarial-v9/barrierefrei-adversarial-v9-results.json \
             --out results/final-v9/barrierefrei-final-results.json \
             --validation results/final-v9/barrierefrei-final-validation.json
-      - name: Enforce zero unresolved and regression compliance
+      - name: Enforce zero unresolved and all regression controls
         run: |
           python - <<'PY'
           import json,pathlib
           rows=json.loads(pathlib.Path('results/final-v9/barrierefrei-final-results.json').read_text())
           val=json.loads(pathlib.Path('results/final-v9/barrierefrei-final-validation.json').read_text())
-          assert len(rows)==1041 and len({int(r['nr']) for r in rows})==1041
+          controls=json.loads(pathlib.Path('audit/smoke-v3-queue.json').read_text())
+          by={int(r['nr']):r for r in rows}
+          assert len(rows)==1041 and len(by)==1041
           assert all(r['verdict'] in {'Aufnehmen','Nicht aufnehmen'} and r['confidence'] in {'Hoch','Sehr hoch'} for r in rows)
           assert all(r.get('reason') and r.get('decision_scope') for r in rows)
-          assert all(r.get('source_url') for r in rows if r['verdict']=='Aufnehmen')
+          assert all(r.get('source_url') and r.get('evidence_excerpt') for r in rows if r['verdict']=='Aufnehmen')
           assert not val.get('validation_errors'),val
-          assert val['positive_controls']=={'109':'Aufnehmen','161':'Aufnehmen','702':'Aufnehmen','1946':'Aufnehmen'}
-          assert val['negative_controls']=={'969':'Nicht aufnehmen','1062':'Nicht aufnehmen','2579':'Nicht aufnehmen','3250':'Nicht aufnehmen'}
+          for item in controls:
+              nr=int(item['nr']);want=item['expected']
+              assert by[nr]['verdict']==want,(nr,want,by[nr]['verdict'])
           PY
       - name: Commit authoritative final-v9 result set
         run: |
